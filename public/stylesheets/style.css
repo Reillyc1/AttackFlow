@@ -1,0 +1,45 @@
+body {
+  padding: 50px;
+  font: 14px "Lucida Grande", Helvetica, Arial, sans-serif;
+}
+
+a {
+  color: #00B7FF;
+}
+
+.create-account {
+  text-align: center;
+}
+
+.login {
+  display: grid;
+  justify-items: center;
+  align-items: center;
+}
+
+.centered{
+  text-align: center;
+  vertical-align: middle;
+}
+
+table {
+  font-family: arial, sans-serif;
+  border-collapse: collapse;
+  width: 100%;
+  margin: 10px;
+  max-width: 1200px;
+}
+
+td, th {
+  border: 1px solid #dddddd;
+  text-align: left;
+  padding: 8px;
+}
+
+td.pointer {
+  cursor: pointer;
+}
+
+tr:hover {
+  background-color: #d9d9d9;
+}

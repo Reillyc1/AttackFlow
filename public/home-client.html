@@ -1,0 +1,80 @@
+<html>
+
+<head>
+  <title>Attack Flow</title>
+  <link rel="stylesheet" href="/stylesheets/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+</head>
+
+<body onload="getFiles()">
+  <h1>Client/Validator Home!</h1>
+  <h2>All Files:</h2>
+</body>
+
+<table id="files">
+  <tr>
+    <th>From User</th>
+    <th>File Name</th>
+    <th>Upload Date and Time</th>
+    <th>Status</th>
+    <th class="centered">Download Link</th>
+  </tr>
+</table>
+
+<script>
+  function getFiles() {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+            if (this.readyState == 4 && this.status == 200) {
+                        const obj = JSON.parse(this.responseText);
+                    for (let i = 0; i < obj.length; i++) {
+                      var user = obj[i].username;
+                      var files = obj[i].fileName;
+                      var stat = obj[i].status;
+                      var parts = files.split(" - ");
+                      // Extract the file name and timestamp
+                      var fileName = parts[0];
+                      var timestamp = parseInt(parts[1].match(/\d+/)[0]);
+
+                      // Convert the timestamp to a Date
+                      const date = new Date(timestamp);
+                      document.getElementById("files").innerHTML += `<tr><td>` + user + `</td><td>` + fileName + `</td><td>` + date + `</td><td>` + stat + `</td><td class="centered pointer">
+                        <i class="fa fa-download" onclick=download(${obj[i].fileID})></i></td></tr>`
+            }
+          }
+  };
+  xhttp.open("GET", "/allFiles", true);
+  xhttp.setRequestHeader("Content-Type", "application/json");
+  xhttp.send();
+}
+
+function download(fileID) {
+  var xhttp = new XMLHttpRequest();
+
+  xhttp.onreadystatechange = function() {
+    if (xhttp.readyState === 4) {
+      if (xhttp.status === 200) {
+        var response = JSON.parse(xhttp.responseText);
+
+        // Create a hidden link and trigger a click to download the file
+        var a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = response.filePath;
+        a.download = response.fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        document.getElementById('status').textContent = 'Downloaded successfully!';
+      } else {
+        document.getElementById('status').textContent = 'Error downloading file.';
+      }
+    }
+  };
+
+  xhttp.open("POST", "/download", true);
+  xhttp.setRequestHeader("Content-type", "application/json");
+  xhttp.send(JSON.stringify({ fileID: fileID }));
+}
+</script>
+</html>

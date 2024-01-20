@@ -1,0 +1,84 @@
+<html>
+
+<head>
+  <title>Attack Flow</title>
+  <link rel="stylesheet" href="/stylesheets/style.css">
+</head>
+
+<body>
+  <h1>Attack Flow</h1>
+  <p>This is a tool to generate and validate attack flows from provided incident reports.</p>
+
+  <div class="login">
+    <form name="login" class="center" onSubmit="_login();return false">
+
+      <section class="login-section">
+        <input type="text" id="username" placeholder="Enter Email/Username" name="email" required>
+      </section>
+
+      <section class="login-section">
+        <input type="password" id="pwd" placeholder="Enter Password" name="password" required>
+      </section>
+
+      <section class="login-button">
+        <input type="submit" value="Login">
+      </section>
+
+    </form>
+  </div>
+
+  <div class="create-account">
+    <a href="create-account.html">Create Account</a>
+  </div>
+
+  <script>
+    function _login() //This function is used to log in the user if their username + password match an existing username + password combination in the database
+    {
+        var xhttp = new XMLHttpRequest();
+        var username_test = document.getElementById("username").value;
+        var password_test = document.getElementById("pwd").value;
+
+        xhttp.onreadystatechange = function(){
+            if (this.readyState == 4 && this.status == 204) {
+              _checkUser();
+
+            }
+        };
+
+        xhttp.open('POST','/login', true);
+        xhttp.setRequestHeader("Content-type", "application/json");
+        xhttp.send(JSON.stringify({ username_test: username_test, password_test: password_test }));
+    }
+
+    function _checkUser()
+    {
+      console.log("hi");
+      var xhttp = new XMLHttpRequest();
+      var username_test = document.getElementById("username").value;
+      var password_test = document.getElementById("pwd").value;
+
+      xhttp.onreadystatechange = function () {
+      if (xhttp.readyState === 4) {
+          if (xhttp.status === 200) {
+              var response = JSON.parse(xhttp.responseText);
+
+              // Handle the response from the server
+              // Perform redirection based on the response data
+          if (response.redirectTo) {
+              window.location.href = response.redirectTo;
+          }
+    } else {
+      console.error('POST request error:', xhttp.status);
+    }
+  }
+};
+
+      xhttp.open('POST','/redirect', true);
+      xhttp.setRequestHeader("Content-type", "application/json");
+      xhttp.send(JSON.stringify({ username_test: username_test, password_test: password_test }));
+    }
+</script>
+
+</body>
+
+</html>

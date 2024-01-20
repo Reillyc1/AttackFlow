@@ -1,0 +1,151 @@
+<html>
+
+<head>
+  <title>Create Account</title>
+  <link rel="stylesheet" href="/stylesheets/style.css">
+</head>
+
+<body>
+    <h1>Create Account</h1>
+
+    <a href="index.html">Back to Login</a>
+
+    <div class="login">
+        <form name="create-account" class="center" onSubmit="_signup();return false">
+
+          <section class="login-section">
+            <label for="email">Enter Email:</label><br>
+            <input type="email" id="email" placeholder="Enter Email" name="email" required>
+          </section>
+
+          <section class="login-section">
+            <label for="username">Enter Username:</label><br>
+            <input type="text" id="username" placeholder="Enter Username" name="username" required>
+          </section>
+
+          <section class="login-section">
+            <label for="password_1">Enter Password:</label><br>
+            <input type="password" id="pwd" placeholder="Enter Password" name="password_1" required>
+          </section>
+
+          <section class="login-section">
+            <label for="password_2">Confirm Password:</label><br>
+            <input type="password" id="pwd2" placeholder="Confirm Password" name="password_2" required>
+          </section>
+
+          <section>
+            <label for="user-access">Select User Type</label><br>
+
+            <input type="radio" name="user-access" id="admin" value="admin" required>
+            <label for="admin">Admin</label><br>
+
+            <input type="radio" name="user-access" id="client" value="client" required>
+            <label for="client">Client</label><br>
+
+            <input type="radio" name="user-access" id="annotator" value="annotator" required>
+            <label for="annotator">Annotator</label><br>
+          </section>
+
+          <section class="login-button">
+            <input type="submit" value="Create Account">
+          </section>
+
+        </form>
+      </div>
+
+      <script>
+      function _signup() {
+        console.log("working");
+          var xhttp = new XMLHttpRequest();
+          var username_test = document.getElementById("username").value;
+          var password_test = document.getElementById("pwd").value;
+          var password2 = document.getElementById("pwd2").value;
+          var email_test = document.getElementById("email").value;
+          var user_access;
+          var testvariable = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          var ele = document.getElementsByName('user-access');
+
+          for (i = 0; i < ele.length; i++) {
+              if (ele[i].checked)
+              user_access = ele[i].value;
+          }
+
+      if(!username_test || !password_test || !email_test || !user_access){
+          alert("Required field(s) are empty");
+          return;
+      }
+      else if (password_test != password2) {
+        alert("Passwords do not match");
+        return;
+      }
+      else {
+          if (testvariable.test(email_test)) {
+              xhttp.onreadystatechange = function(){
+              if (this.readyState == 4)
+              if (this.status == 204){
+                _login();
+              }
+          };
+
+          xhttp.open('POST','/signup', true);
+          xhttp.setRequestHeader("Content-type", "application/json");
+          xhttp.send(JSON.stringify({ user_access: user_access, username_test: username_test, password_test: password_test, email_test: email_test}));
+      }
+      else {
+          alert("Invalid Email");
+      }
+      }
+  }
+
+  function _login() //This function is used to log in the user if their username + password match an existing username + password combination in the database
+    {
+        var xhttp = new XMLHttpRequest();
+        var username_test = document.getElementById("username").value;
+        var password_test = document.getElementById("pwd").value;
+
+        xhttp.onreadystatechange = function(){
+            if (this.readyState == 4 && this.status == 204) {
+              _checkUser();
+
+            }
+        };
+
+        xhttp.open('POST','/login', true);
+        xhttp.setRequestHeader("Content-type", "application/json");
+        xhttp.send(JSON.stringify({ username_test: username_test, password_test: password_test }));
+    }
+
+  function _checkUser()
+    {
+      console.log("hi");
+      var xhttp = new XMLHttpRequest();
+      var username_test = document.getElementById("username").value;
+      var password_test = document.getElementById("pwd").value;
+
+      xhttp.onreadystatechange = function () {
+      if (xhttp.readyState === 4) {
+          if (xhttp.status === 200) {
+              var response = JSON.parse(xhttp.responseText);
+
+              // Handle the response from the server
+              // Perform redirection based on the response data
+          if (response.redirectTo) {
+              window.location.href = response.redirectTo;
+          }
+    } else {
+      console.error('POST request error:', xhttp.status);
+        }
+      }
+    };
+
+      xhttp.open('POST','/redirect', true);
+      xhttp.setRequestHeader("Content-type", "application/json");
+      xhttp.send(JSON.stringify({ username_test: username_test, password_test: password_test }));
+    }
+</script>
+
+  </script>
+
+</body>
+
+</html>
