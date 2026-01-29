@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Attack Flow - Visualization</title>
+  <link rel="stylesheet" href="/stylesheets/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #1a1a2e;
+      color: #eee;
+    }
+
+    .header {
+      background: #16213e;
+      padding: 15px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 2px solid #4a90d9;
+    }
+
+    .header h1 {
+      margin: 0;
+      font-size: 20px;
+      color: #4a90d9;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .btn-primary {
+      background: #4a90d9;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #3a7bc8;
+    }
+
+    .btn-secondary {
+      background: #6c757d;
+      color: white;
+    }
+
+    .btn-secondary:hover {
+      background: #5a6268;
+    }
+
+    .main-container {
+      display: flex;
+      height: calc(100vh - 60px);
+    }
+
+    .sidebar {
+      width: 350px;
+      background: #16213e;
+      padding: 20px;
+      overflow-y: auto;
+      border-right: 1px solid #2a2a4a;
+    }
+
+    .sidebar h2 {
+      margin-top: 0;
+      color: #4a90d9;
+      font-size: 16px;
+      border-bottom: 1px solid #2a2a4a;
+      padding-bottom: 10px;
+    }
+
+    .flow-info {
+      margin-bottom: 20px;
+    }
+
+    .flow-info p {
+      margin: 8px 0;
+      font-size: 13px;
+    }
+
+    .flow-info strong {
+      color: #4a90d9;
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: bold;
+    }
+
+    .status-pending {
+      background: #ffc107;
+      color: #856404;
+    }
+
+    .status-approved {
+      background: #28a745;
+      color: white;
+    }
+
+    .status-rejected {
+      background: #dc3545;
+      color: white;
+    }
+
+    .action-list {
+      margin-top: 20px;
+    }
+
+    .action-item {
+      background: #1a1a2e;
+      border: 1px solid #2a2a4a;
+      border-left: 4px solid #4a90d9;
+      padding: 12px;
+      margin-bottom: 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .action-item:hover {
+      background: #2a2a4a;
+    }
+
+    .action-item.selected {
+      border-left-color: #28a745;
+      background: #2a2a4a;
+    }
+
+    .action-item .technique-id {
+      color: #ffc107;
+      font-weight: bold;
+      font-size: 12px;
+    }
+
+    .action-item .action-name {
+      color: #fff;
+      font-size: 14px;
+      margin: 5px 0;
+    }
+
+    .action-item .action-desc {
+      color: #aaa;
+      font-size: 12px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .visualization-area {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #flowCanvas {
+      width: 100%;
+      height: 100%;
+    }
+
+    .zoom-controls {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .zoom-btn {
+      width: 40px;
+      height: 40px;
+      border: none;
+      background: #16213e;
+      color: white;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 18px;
+    }
+
+    .zoom-btn:hover {
+      background: #2a2a4a;
+    }
+
+    .legend {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      background: rgba(22, 33, 62, 0.9);
+      padding: 15px;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 5px 0;
+    }
+
+    .legend-color {
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+    }
+
+    .no-flow {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100%;
+      color: #666;
+      font-size: 18px;
+    }
+
+    /* Node colors by tactic */
+    .tactic-reconnaissance { background: #e74c3c; }
+    .tactic-resource-development { background: #e67e22; }
+    .tactic-initial-access { background: #f39c12; }
+    .tactic-execution { background: #27ae60; }
+    .tactic-persistence { background: #2ecc71; }
+    .tactic-privilege-escalation { background: #1abc9c; }
+    .tactic-defense-evasion { background: #3498db; }
+    .tactic-credential-access { background: #9b59b6; }
+    .tactic-discovery { background: #8e44ad; }
+    .tactic-lateral-movement { background: #34495e; }
+    .tactic-collection { background: #16a085; }
+    .tactic-command-and-control { background: #d35400; }
+    .tactic-exfiltration { background: #c0392b; }
+    .tactic-impact { background: #7f8c8d; }
+  </style>
+</head>
+
+<body onload="init()">
+  <div class="header">
+    <h1><i class="fa fa-sitemap"></i> Attack Flow Visualization</h1>
+    <div class="header-actions">
+      <button class="btn btn-secondary" onclick="downloadJSON()">
+        <i class="fa fa-download"></i> Download JSON
+      </button>
+      <a href="/home" class="btn btn-primary">
+        <i class="fa fa-home"></i> Back to Home
+      </a>
+    </div>
+  </div>
+
+  <div class="main-container">
+    <div class="sidebar">
+      <div class="flow-info">
+        <h2><i class="fa fa-info-circle"></i> Flow Details</h2>
+        <p><strong>Name:</strong> <span id="flowName">Loading...</span></p>
+        <p><strong>Source File:</strong> <span id="fileName">Loading...</span></p>
+        <p><strong>Created By:</strong> <span id="createdBy">Loading...</span></p>
+        <p><strong>Created At:</strong> <span id="createdAt">Loading...</span></p>
+        <p><strong>Status:</strong> <span id="flowStatus" class="status-badge status-pending">Pending</span></p>
+      </div>
+
+      <div class="action-list">
+        <h2><i class="fa fa-bolt"></i> Attack Actions</h2>
+        <div id="actionsList">
+          Loading actions...
+        </div>
+      </div>
+    </div>
+
+    <div class="visualization-area">
+      <canvas id="flowCanvas"></canvas>
+
+      <div class="zoom-controls">
+        <button class="zoom-btn" onclick="zoomIn()">+</button>
+        <button class="zoom-btn" onclick="zoomOut()">-</button>
+        <button class="zoom-btn" onclick="resetView()"><i class="fa fa-refresh"></i></button>
+      </div>
+
+      <div class="legend">
+        <strong>Tactics Legend:</strong>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #e74c3c;"></div>
+          <span>Reconnaissance</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #f39c12;"></div>
+          <span>Initial Access</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #27ae60;"></div>
+          <span>Execution</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #3498db;"></div>
+          <span>Defense Evasion</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #9b59b6;"></div>
+          <span>Credential Access</span>
+        </div>
+        <div class="legend-item">
+          <div class="legend-color" style="background: #c0392b;"></div>
+          <span>Exfiltration</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const flowID = urlParams.get('flowID');
+
+    let flowData = null;
+    let canvas, ctx;
+    let scale = 1;
+    let offsetX = 0, offsetY = 0;
+    let isDragging = false;
+    let lastX, lastY;
+    let nodes = [];
+    let edges = [];
+
+    const tacticColors = {
+      'reconnaissance': '#e74c3c',
+      'resource development': '#e67e22',
+      'initial access': '#f39c12',
+      'execution': '#27ae60',
+      'persistence': '#2ecc71',
+      'privilege escalation': '#1abc9c',
+      'defense evasion': '#3498db',
+      'credential access': '#9b59b6',
+      'discovery': '#8e44ad',
+      'lateral movement': '#34495e',
+      'collection': '#16a085',
+      'command and control': '#d35400',
+      'exfiltration': '#c0392b',
+      'impact': '#7f8c8d'
+    };
+
+    function init() {
+      if (!flowID) {
+        document.getElementById('actionsList').innerHTML = '<p>No flow ID specified</p>';
+        return;
+      }
+
+      canvas = document.getElementById('flowCanvas');
+      ctx = canvas.getContext('2d');
+
+      resizeCanvas();
+      window.addEventListener('resize', resizeCanvas);
+
+      canvas.addEventListener('mousedown', startDrag);
+      canvas.addEventListener('mousemove', drag);
+      canvas.addEventListener('mouseup', endDrag);
+      canvas.addEventListener('wheel', handleWheel);
+
+      loadFlowData();
+    }
+
+    function resizeCanvas() {
+      canvas.width = canvas.parentElement.clientWidth;
+      canvas.height = canvas.parentElement.clientHeight;
+      draw();
+    }
+
+    function loadFlowData() {
+      var xhttp = new XMLHttpRequest();
+      xhttp.onreadystatechange = function() {
+        if (this.readyState == 4) {
+          if (this.status == 200) {
+            flowData = JSON.parse(this.responseText);
+            displayFlowInfo();
+            parseFlowObjects();
+            draw();
+          } else {
+            document.getElementById('actionsList').innerHTML = '<p>Error loading flow data</p>';
+          }
+        }
+      };
+      xhttp.open("GET", "/attack-flow/" + flowID, true);
+      xhttp.send();
+    }
+
+    function displayFlowInfo() {
+      document.getElementById('flowName').textContent = flowData.flowName || 'Unnamed';
+
+      var fileName = flowData.fileName || 'Unknown';
+      var match = fileName.match(/^(.+)_(\d+)(\.[^.]+)$/);
+      if (match) fileName = match[1].replace(/_/g, ' ') + match[3];
+      document.getElementById('fileName').textContent = fileName;
+
+      document.getElementById('createdBy').textContent = flowData.createdByUsername || 'Unknown';
+      document.getElementById('createdAt').textContent = flowData.createdAt ?
+        new Date(flowData.createdAt).toLocaleString() : 'Unknown';
+
+      var statusBadge = document.getElementById('flowStatus');
+      statusBadge.textContent = flowData.status || 'Pending';
+      statusBadge.className = 'status-badge status-' + (flowData.status || 'pending').toLowerCase();
+    }
+
+    function parseFlowObjects() {
+      if (!flowData.flowJSON || !flowData.flowJSON.objects) {
+        return;
+      }
+
+      nodes = [];
+      edges = [];
+
+      var objects = flowData.flowJSON.objects;
+      var actionsHtml = '';
+
+      // First pass: collect all nodes
+      var nodeMap = {};
+      objects.forEach(function(obj) {
+        if (obj.type === 'attack-action') {
+          var node = {
+            id: obj.id,
+            name: obj.name,
+            description: obj.description || '',
+            techniqueId: obj.technique_id || '',
+            tactic: obj.tactic_id || 'unknown',
+            x: 0,
+            y: 0
+          };
+          nodeMap[obj.id] = node;
+          nodes.push(node);
+
+          // Get color for tactic
+          var color = tacticColors[node.tactic.toLowerCase()] || '#4a90d9';
+
+          actionsHtml += `
+            <div class="action-item" onclick="highlightNode('${obj.id}')" data-id="${obj.id}">
+              <div class="technique-id">${node.techniqueId || 'N/A'}</div>
+              <div class="action-name">${node.name}</div>
+              <div class="action-desc">${node.description.substring(0, 100)}${node.description.length > 100 ? '...' : ''}</div>
+            </div>
+          `;
+        }
+      });
+
+      document.getElementById('actionsList').innerHTML = actionsHtml || '<p>No actions found</p>';
+
+      // Second pass: collect relationships/edges
+      objects.forEach(function(obj) {
+        if (obj.type === 'relationship') {
+          edges.push({
+            source: obj.target_ref,
+            target: obj.source_ref
+          });
+        }
+      });
+
+      // Layout nodes
+      layoutNodes();
+    }
+
+    function layoutNodes() {
+      // Simple horizontal layout
+      var startX = 150;
+      var startY = canvas.height / 2;
+      var spacing = 250;
+
+      nodes.forEach(function(node, index) {
+        node.x = startX + (index * spacing);
+        node.y = startY + (Math.sin(index * 0.5) * 50);
+      });
+
+      // Center the view
+      if (nodes.length > 0) {
+        offsetX = canvas.width / 2 - (nodes[0].x + nodes[nodes.length - 1].x) / 2;
+        offsetY = 0;
+      }
+    }
+
+    function draw() {
+      if (!ctx) return;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+
+      ctx.translate(offsetX, offsetY);
+      ctx.scale(scale, scale);
+
+      // Draw edges
+      ctx.strokeStyle = '#4a90d9';
+      ctx.lineWidth = 2;
+      edges.forEach(function(edge) {
+        var sourceNode = nodes.find(n => n.id === edge.source);
+        var targetNode = nodes.find(n => n.id === edge.target);
+
+        if (sourceNode && targetNode) {
+          drawArrow(sourceNode.x + 60, sourceNode.y, targetNode.x - 60, targetNode.y);
+        }
+      });
+
+      // Draw nodes
+      nodes.forEach(function(node) {
+        drawNode(node);
+      });
+
+      ctx.restore();
+    }
+
+    function drawNode(node) {
+      var width = 120;
+      var height = 80;
+      var x = node.x - width / 2;
+      var y = node.y - height / 2;
+
+      // Node background
+      var color = tacticColors[node.tactic.toLowerCase()] || '#4a90d9';
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.roundRect(x, y, width, height, 8);
+      ctx.fill();
+
+      // Node border
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = node.highlighted ? 3 : 1;
+      ctx.stroke();
+
+      // Technique ID
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 10px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(node.techniqueId || 'N/A', node.x, y + 20);
+
+      // Node name
+      ctx.font = '11px Arial';
+      var name = node.name.length > 15 ? node.name.substring(0, 15) + '...' : node.name;
+      ctx.fillText(name, node.x, y + 40);
+
+      // Tactic
+      ctx.font = '9px Arial';
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      var tactic = node.tactic.length > 15 ? node.tactic.substring(0, 15) + '...' : node.tactic;
+      ctx.fillText(tactic, node.x, y + 60);
+    }
+
+    function drawArrow(fromX, fromY, toX, toY) {
+      var headlen = 10;
+      var angle = Math.atan2(toY - fromY, toX - fromX);
+
+      ctx.beginPath();
+      ctx.moveTo(fromX, fromY);
+      ctx.lineTo(toX, toY);
+      ctx.stroke();
+
+      // Arrowhead
+      ctx.beginPath();
+      ctx.moveTo(toX, toY);
+      ctx.lineTo(toX - headlen * Math.cos(angle - Math.PI / 6), toY - headlen * Math.sin(angle - Math.PI / 6));
+      ctx.lineTo(toX - headlen * Math.cos(angle + Math.PI / 6), toY - headlen * Math.sin(angle + Math.PI / 6));
+      ctx.closePath();
+      ctx.fillStyle = '#4a90d9';
+      ctx.fill();
+    }
+
+    function highlightNode(nodeId) {
+      nodes.forEach(function(node) {
+        node.highlighted = (node.id === nodeId);
+      });
+
+      document.querySelectorAll('.action-item').forEach(function(item) {
+        item.classList.toggle('selected', item.dataset.id === nodeId);
+      });
+
+      draw();
+    }
+
+    function startDrag(e) {
+      isDragging = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+    }
+
+    function drag(e) {
+      if (!isDragging) return;
+      offsetX += e.clientX - lastX;
+      offsetY += e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      draw();
+    }
+
+    function endDrag() {
+      isDragging = false;
+    }
+
+    function handleWheel(e) {
+      e.preventDefault();
+      var delta = e.deltaY > 0 ? 0.9 : 1.1;
+      scale *= delta;
+      scale = Math.max(0.2, Math.min(3, scale));
+      draw();
+    }
+
+    function zoomIn() {
+      scale *= 1.2;
+      scale = Math.min(3, scale);
+      draw();
+    }
+
+    function zoomOut() {
+      scale *= 0.8;
+      scale = Math.max(0.2, scale);
+      draw();
+    }
+
+    function resetView() {
+      scale = 1;
+      layoutNodes();
+      draw();
+    }
+
+    function downloadJSON() {
+      if (!flowData) return;
+      var a = document.createElement('a');
+      a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(flowData.flowJSON, null, 2));
+      a.download = (flowData.flowName || 'attack-flow') + '.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    // Polyfill for roundRect if not available
+    if (!CanvasRenderingContext2D.prototype.roundRect) {
+      CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+        if (w < 2 * r) r = w / 2;
+        if (h < 2 * r) r = h / 2;
+        this.beginPath();
+        this.moveTo(x + r, y);
+        this.arcTo(x + w, y, x + w, y + h, r);
+        this.arcTo(x + w, y + h, x, y + h, r);
+        this.arcTo(x, y + h, x, y, r);
+        this.arcTo(x, y, x + w, y, r);
+        this.closePath();
+        return this;
+      };
+    }
+  </script>
+</body>
+
+</html>

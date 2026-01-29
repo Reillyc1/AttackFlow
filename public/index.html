@@ -1,7 +1,10 @@
-<html>
+<!DOCTYPE html>
+<html lang="en">
 
 <head>
-  <title>Attack Flow</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Attack Flow - Login</title>
   <link rel="stylesheet" href="/stylesheets/style.css">
 </head>
 
@@ -10,19 +13,23 @@
   <p>This is a tool to generate and validate attack flows from provided incident reports.</p>
 
   <div class="login">
-    <form name="login" class="center" onSubmit="_login();return false">
+    <form name="login" class="center" onSubmit="handleLogin(event)">
 
       <section class="login-section">
-        <input type="text" id="username" placeholder="Enter Email/Username" name="email" required>
+        <input type="text" id="username" placeholder="Enter Username" name="username" required
+               minlength="3" maxlength="64" autocomplete="username">
       </section>
 
       <section class="login-section">
-        <input type="password" id="pwd" placeholder="Enter Password" name="password" required>
+        <input type="password" id="password" placeholder="Enter Password" name="password" required
+               minlength="6" maxlength="128" autocomplete="current-password">
       </section>
 
       <section class="login-button">
-        <input type="submit" value="Login">
+        <input type="submit" value="Login" id="loginBtn">
       </section>
+
+      <div id="error-message" class="error-message" style="display: none;"></div>
 
     </form>
   </div>
@@ -32,52 +39,120 @@
   </div>
 
   <script>
-    function _login() //This function is used to log in the user if their username + password match an existing username + password combination in the database
-    {
-        var xhttp = new XMLHttpRequest();
-        var username_test = document.getElementById("username").value;
-        var password_test = document.getElementById("pwd").value;
+    /**
+     * Handles the login form submission
+     * Sends credentials to the server and handles the response
+     *
+     * @param {Event} event - The form submit event
+     */
+    function handleLogin(event) {
+      event.preventDefault();
 
-        xhttp.onreadystatechange = function(){
-            if (this.readyState == 4 && this.status == 204) {
-              _checkUser();
+      const usernameInput = document.getElementById('username');
+      const passwordInput = document.getElementById('password');
+      const loginBtn = document.getElementById('loginBtn');
+      const errorDiv = document.getElementById('error-message');
 
-            }
-        };
+      // Get and sanitize input values
+      const username = usernameInput.value.trim();
+      const password = passwordInput.value;
 
-        xhttp.open('POST','/login', true);
-        xhttp.setRequestHeader("Content-type", "application/json");
-        xhttp.send(JSON.stringify({ username_test: username_test, password_test: password_test }));
+      // Client-side validation (defense in depth - server also validates)
+      if (!username || username.length < 3) {
+        showError('Username must be at least 3 characters');
+        return;
+      }
+
+      if (!password || password.length < 6) {
+        showError('Password must be at least 6 characters');
+        return;
+      }
+
+      // Disable button during request to prevent double-submission
+      loginBtn.disabled = true;
+      loginBtn.value = 'Logging in...';
+      hideError();
+
+      // Send login request
+      fetch('/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          username: username,
+          password: password
+        }),
+        credentials: 'same-origin' // Include session cookies
+      })
+      .then(function(response) {
+        if (response.status === 204) {
+          // Login successful, check user role for redirect
+          return checkUserRedirect();
+        } else if (response.status === 429) {
+          // Rate limited
+          return response.json().then(function(data) {
+            throw new Error(data.message || 'Too many login attempts. Please try again later.');
+          });
+        } else {
+          // Login failed
+          return response.json().then(function(data) {
+            throw new Error(data.message || 'Invalid username or password');
+          });
+        }
+      })
+      .catch(function(error) {
+        showError(error.message || 'An error occurred during login');
+        loginBtn.disabled = false;
+        loginBtn.value = 'Login';
+      });
     }
 
-    function _checkUser()
-    {
-      console.log("hi");
-      var xhttp = new XMLHttpRequest();
-      var username_test = document.getElementById("username").value;
-      var password_test = document.getElementById("pwd").value;
-
-      xhttp.onreadystatechange = function () {
-      if (xhttp.readyState === 4) {
-          if (xhttp.status === 200) {
-              var response = JSON.parse(xhttp.responseText);
-
-              // Handle the response from the server
-              // Perform redirection based on the response data
-          if (response.redirectTo) {
-              window.location.href = response.redirectTo;
-          }
-    } else {
-      console.error('POST request error:', xhttp.status);
+    /**
+     * Checks the user's role and redirects to the appropriate dashboard
+     */
+    function checkUserRedirect() {
+      return fetch('/redirect', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'same-origin'
+      })
+      .then(function(response) {
+        if (response.ok) {
+          return response.json();
+        }
+        throw new Error('Failed to determine user role');
+      })
+      .then(function(data) {
+        if (data.redirectTo) {
+          window.location.href = data.redirectTo;
+        } else {
+          throw new Error('No redirect URL provided');
+        }
+      });
     }
-  }
-};
 
-      xhttp.open('POST','/redirect', true);
-      xhttp.setRequestHeader("Content-type", "application/json");
-      xhttp.send(JSON.stringify({ username_test: username_test, password_test: password_test }));
+    /**
+     * Displays an error message to the user
+     *
+     * @param {string} message - The error message to display
+     */
+    function showError(message) {
+      const errorDiv = document.getElementById('error-message');
+      errorDiv.textContent = message;
+      errorDiv.style.display = 'block';
     }
-</script>
+
+    /**
+     * Hides the error message
+     */
+    function hideError() {
+      const errorDiv = document.getElementById('error-message');
+      errorDiv.style.display = 'none';
+    }
+  </script>
 
 </body>
 

@@ -1,380 +1,1570 @@
+/**
+ * AttackFlow API Routes
+ *
+ * This module defines all API endpoints for the AttackFlow application including:
+ * - Authentication (login, logout, signup)
+ * - File management (upload, download, delete)
+ * - Annotations (CRUD operations)
+ * - Attack Flow generation and validation
+ *
+ * Security Features:
+ * - Rate limiting on all endpoints (IP + user based)
+ * - Input validation using Joi schemas
+ * - Role-based access control
+ * - Parameterized SQL queries (SQL injection prevention)
+ * - Session-based authentication
+ */
+
+'use strict';
+
 var express = require('express');
 var router = express.Router();
 var path = require('path');
-var mysql = require('mysql');
 var fs = require('fs');
+var bcrypt = require('bcrypt');
+var { v4: uuidv4 } = require('uuid');
+
+// Security middleware
+var { authLimiter, uploadLimiter, mutationLimiter, generalLimiter } = require('../middleware/rateLimiter');
+var { schemas, validateBody, validateParams, validateQuery, validateContentType } = require('../middleware/validator');
+
+// =============================================================================
+// FILE UPLOAD CONFIGURATION
+// =============================================================================
 
 const multer = require('multer');
+
+/**
+ * Multer storage configuration with secure filename generation
+ */
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, './public/resources');
-  },
-  filename: (req, file, cb) => {
-    console.log(file);
-    cb(null, path.basename(file.originalname, '.pdf') + " - " + Date.now() + path.extname(file.originalname));
-  }
-})
+    destination: (req, file, cb) => {
+        cb(null, './public/resources');
+    },
+    filename: (req, file, cb) => {
+        const timestamp = Date.now();
+        // Sanitize filename: only allow alphanumeric, dots, and hyphens
+        const safeName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+        cb(null, `${path.basename(safeName, path.extname(safeName))}_${timestamp}${path.extname(safeName)}`);
+    }
+});
 
-const upload = multer({storage: storage});
+/**
+ * Multer configuration with file type validation and size limits
+ */
+const upload = multer({
+    storage: storage,
+    fileFilter: (req, file, cb) => {
+        // Validate file extension
+        const allowedExtensions = (process.env.ALLOWED_FILE_EXTENSIONS || '.pdf,.doc,.docx,.txt').split(',');
+        const ext = path.extname(file.originalname).toLowerCase();
 
-/* GET home page. */
+        if (allowedExtensions.includes(ext)) {
+            cb(null, true);
+        } else {
+            cb(new Error(`Invalid file type. Allowed types: ${allowedExtensions.join(', ')}`));
+        }
+    },
+    limits: {
+        fileSize: parseInt(process.env.MAX_FILE_SIZE, 10) || 50 * 1024 * 1024 // 50MB default
+    }
+});
+
+// =============================================================================
+// SECURITY CONFIGURATION
+// =============================================================================
+
+const SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS, 10) || 12;
+
+// =============================================================================
+// AUTHENTICATION MIDDLEWARE
+// =============================================================================
+
+/**
+ * Middleware to require authentication
+ * Checks for valid session with userID
+ */
+function requireAuth(req, res, next) {
+    if (req.session && req.session.userID) {
+        next();
+    } else {
+        res.status(401).json({
+            error: 'Unauthorized',
+            message: 'Please log in to access this resource'
+        });
+    }
+}
+
+/**
+ * Middleware to require specific user roles
+ * Must be used after requireAuth
+ *
+ * @param {Array<string>} roles - Array of allowed roles
+ * @returns {Function} Express middleware function
+ */
+function requireRole(roles) {
+    return function(req, res, next) {
+        if (!req.session || !req.session.userID) {
+            return res.status(401).json({
+                error: 'Unauthorized',
+                message: 'Please log in to access this resource'
+            });
+        }
+
+        req.pool.getConnection(function(err, connection) {
+            if (err) {
+                console.error('Database connection error:', err.message);
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to verify permissions'
+                });
+            }
+
+            connection.query(
+                'SELECT access FROM users WHERE userID = ?',
+                [req.session.userID],
+                function(err, rows) {
+                    connection.release();
+
+                    if (err || rows.length === 0) {
+                        return res.status(500).json({
+                            error: 'Authorization Error',
+                            message: 'Unable to verify user role'
+                        });
+                    }
+
+                    if (roles.includes(rows[0].access)) {
+                        req.userRole = rows[0].access;
+                        next();
+                    } else {
+                        res.status(403).json({
+                            error: 'Forbidden',
+                            message: 'You do not have permission to perform this action'
+                        });
+                    }
+                }
+            );
+        });
+    };
+}
+
+// =============================================================================
+// PUBLIC ROUTES
+// =============================================================================
+
+/**
+ * GET /
+ * Serve the login page
+ */
 router.get('/', function(req, res, next) {
-  res.render('index', { title: 'Express' });
+    res.sendFile(path.resolve(__dirname + '/../public/index.html'));
 });
 
+/**
+ * GET /session_id
+ * Get current session information
+ */
 router.get('/session_id', function(req, res, next) {
-
-  var session_val = req.session.userID;
-  console.log("UserID is: " +  req.session.userID);
-  res.json(session_val);
+    if (req.session && req.session.userID) {
+        res.json({
+            userID: req.session.userID,
+            username: req.session.username,
+            role: req.session.role
+        });
+    } else {
+        res.json({ userID: null });
+    }
 });
 
-router.post('/login', function(req, res, next) {
-  console.log("TESTING LOG IN...");
-
-  var username_check = req.body.username_test;
-  var password_check = req.body.password_test;
-
-  req.pool.getConnection(function(err, connection)
-  {
-    if (err)
-    {
-      console.log("Get connection error");
-      res.sendStatus(500);
-      return;
-    }
-
-    //Search 'users' database for a row with a matching users name and password to what was entered
-    var query = "SELECT password, userID FROM users WHERE username='" + username_check + "';";
-    connection.query(query, function(err, rows, fields)
-    {
-      connection.release(); //release the connection
-      if (err)
-      {
-        console.log("Query error");
-        res.sendStatus(500);
-        return;
-      }
-
-      //FOR DEBUGGING!
-      console.log("USERNAME: " + username_check + " | PASSWORD: " + password_check);
-
-      //If any rows were returned with a matching password, it's a successful log in attempt
-      if (rows.length > 0 && rows[0].password == password_check)
-      {
-        console.log("LOGIN WAS SUCCESSFUL!"); // DEBUG
-
-        req.session.userID = rows[0].userID;
-        console.log("Current user's userID: " + req.session.userID);
-        res.sendStatus(204); //successful login
-      }
-      else
-      {
-        console.log("LOGIN FAILED :("); // DEBUG
-        res.sendStatus(401); //failed login
-      }
-
-
-    });
-  });
-});
-
-router.get('/create-account', function(req, res, next) {
-  res.render('create-account', { title: 'Create Account' });
-});
-
-router.post('/signup', function(req, res, next) {
-  console.log("TESTING SIGN UP...");
-
-  var username_check = req.body.username_test;
-  var password_check = req.body.password_test;
-  var email_check = req.body.email_test;
-  var access_check = req.body.user_access;
-
-  var email_exists = false;
-  var username_exists = false;
-
-  //FOR DEBUGGING!
-  console.log("USERNAME: " + username_check + " | PASSWORD: " + password_check + " | EMAIL: " + email_check + " | ADMINISTRATOR?: " + access_check);
-
-  //STEP 1 -- CHECK IF users WITH THE INPUT EMAIL ALREADY EXISTS
-  req.pool.getConnection(function(err, connection)
-  {
-    if (err)
-    {
-      console.log("Get connection error");
-      res.sendStatus(500);
-      return;
-    }
-
-    var query = "SELECT * FROM users WHERE email='" + email_check + "';";
-    connection.query(query, function(err, rows, fields)
-    {
-      connection.release(); //release the connection
-      if (err)
-      {
-        console.log("Query error");
-        res.sendStatus(500);
-        return;
-      }
-
-      //If any rows were returned with a matching email
-      if (rows.length > 0)
-      {
-        email_exists = true;
-        console.log("EMAIL ALREADY EXISTS!"); // DEBUG
-      }
-    });
-  });
-
-  //STEP 2 -- CHECK IF users WITH THE INPUT USERNAME ALREADY EXISTS
-  req.pool.getConnection(function(err, connection)
-  {
-    if (err)
-    {
-      console.log("Get connection error");
-      res.sendStatus(500);
-      return;
-    }
-
-    var query = "SELECT * FROM users WHERE username='" + username_check + "';";
-    connection.query(query, function(err, rows, fields)
-    {
-      connection.release(); //release the connection
-      if (err)
-      {
-        console.log("Query error");
-        res.sendStatus(500);
-        return;
-      }
-
-      //If any rows were returned with a matching users name
-      if (rows.length > 0)
-      {
-        username_exists = true;
-        console.log("USERNAME ALREADY EXISTS!"); // DEBUG
-      }
-    });
-  });
-
-
-    //STEP 3 -- IF users'S EMAIL + EMAIL DON'T ALREADY EXIST, ENTER THEM INTO THE users DATABASE
-    req.pool.getConnection(function(err, connection)
-  {
-    if (err)
-    {
-      console.log("Get connection error");
-      res.sendStatus(500);
-      return;
-    }
-
-    //If email or username already exist, the sign up attempt fails
-    if (username_exists || email_exists)
-    {
-      console.log("SIGN UP FAILED :("); // DEBUG
-      res.sendStatus(401); //failed signup
-    }
-    else
-    {
-
-      var query3 = "INSERT INTO users (username, password, email, access) VALUES (?, ?, ?, ?)";
-      connection.query(query3, [username_check, password_check, email_check, access_check], function(err, rows, fields) {
-        connection.release(); // release the connection
+/**
+ * GET /tags
+ * Get all predefined MITRE ATT&CK tags
+ * Public endpoint - tags are not sensitive
+ */
+router.get('/tags', generalLimiter, function(req, res) {
+    req.pool.getConnection(function(err, connection) {
         if (err) {
-          console.log("Query error at step 3");
-          res.sendStatus(500);
-          return;
+            return res.status(500).json({
+                error: 'Database Error',
+                message: 'Unable to fetch tags'
+            });
         }
 
-        console.log("SIGN UP WAS SUCCESSFUL!"); // DEBUG
-        res.sendStatus(204); //successful signup
-      });
+        connection.query('SELECT * FROM tags ORDER BY category, name', function(err, rows) {
+            connection.release();
+            if (err) {
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to fetch tags'
+                });
+            }
+            res.json(rows);
+        });
+    });
+});
+
+// =============================================================================
+// AUTHENTICATION ROUTES
+// =============================================================================
+
+/**
+ * POST /login
+ * Authenticate user and create session
+ *
+ * Rate limited: 5 attempts per 15 minutes per IP
+ */
+router.post('/login',
+    authLimiter,
+    validateContentType(),
+    validateBody(schemas.login),
+    async function(req, res, next) {
+        const { username, password } = req.body;
+
+        req.pool.getConnection(function(err, connection) {
+            if (err) {
+                console.error('Database connection error:', err.message);
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to process login request'
+                });
+            }
+
+            // Use parameterized query to prevent SQL injection
+            connection.query(
+                'SELECT userID, username, password, access FROM users WHERE username = ?',
+                [username],
+                async function(err, rows) {
+                    connection.release();
+
+                    if (err) {
+                        console.error('Query error:', err.message);
+                        return res.status(500).json({
+                            error: 'Database Error',
+                            message: 'Unable to process login request'
+                        });
+                    }
+
+                    if (rows.length === 0) {
+                        // Use generic message to prevent username enumeration
+                        return res.status(401).json({
+                            error: 'Authentication Failed',
+                            message: 'Invalid username or password'
+                        });
+                    }
+
+                    const user = rows[0];
+
+                    try {
+                        // Check if password is hashed (bcrypt hashes start with $2b$ or $2a$)
+                        let isMatch = false;
+                        if (user.password.startsWith('$2b$') || user.password.startsWith('$2a$')) {
+                            isMatch = await bcrypt.compare(password, user.password);
+                        } else {
+                            // Legacy plaintext comparison (for migration from old system)
+                            // In production, this should trigger a password hash update
+                            isMatch = (user.password === password);
+                        }
+
+                        if (isMatch) {
+                            // Regenerate session to prevent session fixation
+                            req.session.regenerate(function(err) {
+                                if (err) {
+                                    console.error('Session regeneration error:', err);
+                                }
+
+                                // Set session data
+                                req.session.userID = user.userID;
+                                req.session.username = user.username;
+                                req.session.role = user.access;
+
+                                // Determine redirect URL based on role
+                                let redirectTo = '/home-annotator.html';
+                                switch (user.access) {
+                                    case 'admin':
+                                        redirectTo = '/home-admin.html';
+                                        break;
+                                    case 'client':
+                                        redirectTo = '/home-client.html';
+                                        break;
+                                    case 'annotator':
+                                        redirectTo = '/home-annotator.html';
+                                        break;
+                                }
+
+                                res.json({
+                                    success: true,
+                                    redirectTo: redirectTo,
+                                    role: user.access
+                                });
+                            });
+                        } else {
+                            res.status(401).json({
+                                error: 'Authentication Failed',
+                                message: 'Invalid username or password'
+                            });
+                        }
+                    } catch (error) {
+                        console.error('Password comparison error:', error);
+                        res.status(500).json({
+                            error: 'Authentication Error',
+                            message: 'Unable to process login request'
+                        });
+                    }
+                }
+            );
+        });
+    }
+);
+
+/**
+ * POST /logout
+ * Destroy session and log out user
+ */
+router.post('/logout', function(req, res) {
+    req.session.destroy(function(err) {
+        if (err) {
+            return res.status(500).json({
+                error: 'Logout Error',
+                message: 'Unable to complete logout'
+            });
+        }
+        res.clearCookie('attackflow.sid');
+        res.json({ success: true });
+    });
+});
+
+/**
+ * POST /signup
+ * Create new user account
+ *
+ * Rate limited: 5 attempts per 15 minutes per IP
+ */
+router.post('/signup',
+    authLimiter,
+    validateContentType(),
+    validateBody(schemas.signup),
+    async function(req, res, next) {
+        const { username, password, email, access } = req.body;
+
+        // Default role is annotator (validated by schema)
+        const userRole = access || 'annotator';
+
+        try {
+            // Hash password with configured salt rounds
+            const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+
+            req.pool.getConnection(function(err, connection) {
+                if (err) {
+                    console.error('Database connection error:', err.message);
+                    return res.status(500).json({
+                        error: 'Database Error',
+                        message: 'Unable to create account'
+                    });
+                }
+
+                // Check for existing email or username
+                connection.query(
+                    'SELECT userID FROM users WHERE email = ? OR username = ?',
+                    [email, username],
+                    function(err, rows) {
+                        if (err) {
+                            connection.release();
+                            console.error('Query error:', err.message);
+                            return res.status(500).json({
+                                error: 'Database Error',
+                                message: 'Unable to create account'
+                            });
+                        }
+
+                        if (rows.length > 0) {
+                            connection.release();
+                            return res.status(409).json({
+                                error: 'Account Exists',
+                                message: 'An account with this email or username already exists'
+                            });
+                        }
+
+                        // Insert new user
+                        connection.query(
+                            'INSERT INTO users (username, password, email, access) VALUES (?, ?, ?, ?)',
+                            [username, hashedPassword, email, userRole],
+                            function(err, result) {
+                                connection.release();
+                                if (err) {
+                                    console.error('Insert error:', err.message);
+                                    return res.status(500).json({
+                                        error: 'Database Error',
+                                        message: 'Unable to create account'
+                                    });
+                                }
+
+                                res.status(201).json({
+                                    success: true,
+                                    message: 'Account created successfully'
+                                });
+                            }
+                        );
+                    }
+                );
+            });
+        } catch (error) {
+            console.error('Signup error:', error);
+            res.status(500).json({
+                error: 'Server Error',
+                message: 'Unable to create account'
+            });
+        }
+    }
+);
+
+/**
+ * POST /redirect
+ * Legacy redirect endpoint for backward compatibility
+ */
+router.post('/redirect',
+    authLimiter,
+    validateContentType(),
+    function(req, res) {
+        const username = req.body.username;
+
+        if (!username) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'Username is required'
+            });
+        }
+
+        req.pool.getConnection(function(err, connection) {
+            if (err) {
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to process request'
+                });
+            }
+
+            connection.query(
+                'SELECT access FROM users WHERE username = ?',
+                [username],
+                function(err, rows) {
+                    connection.release();
+                    if (err || rows.length === 0) {
+                        return res.status(500).json({
+                            error: 'Database Error',
+                            message: 'Unable to fetch user role'
+                        });
+                    }
+
+                    let redirectTo = '/home-annotator.html';
+                    switch (rows[0].access) {
+                        case 'admin':
+                            redirectTo = '/home-admin.html';
+                            break;
+                        case 'client':
+                            redirectTo = '/home-client.html';
+                            break;
+                        case 'annotator':
+                            redirectTo = '/home-annotator.html';
+                            break;
+                    }
+                    res.json({ redirectTo: redirectTo });
+                }
+            );
+        });
+    }
+);
+
+// =============================================================================
+// USER ROUTES
+// =============================================================================
+
+/**
+ * GET /current-user
+ * Get current authenticated user's information
+ */
+router.get('/current-user', requireAuth, function(req, res) {
+    req.pool.getConnection(function(err, connection) {
+        if (err) {
+            return res.status(500).json({
+                error: 'Database Error',
+                message: 'Unable to fetch user information'
+            });
+        }
+
+        connection.query(
+            'SELECT userID, username, email, access FROM users WHERE userID = ?',
+            [req.session.userID],
+            function(err, rows) {
+                connection.release();
+                if (err || rows.length === 0) {
+                    return res.status(500).json({
+                        error: 'Database Error',
+                        message: 'Unable to fetch user information'
+                    });
+                }
+                res.json(rows[0]);
+            }
+        );
+    });
+});
+
+// =============================================================================
+// FILE ROUTES
+// =============================================================================
+
+/**
+ * POST /upload
+ * Upload a new file
+ *
+ * Rate limited: 20 uploads per hour per user
+ */
+router.post('/upload',
+    requireAuth,
+    uploadLimiter,
+    upload.single('file'),
+    (req, res) => {
+        if (!req.file) {
+            return res.status(400).json({
+                error: 'Upload Error',
+                message: 'No file was uploaded'
+            });
+        }
+
+        const uploadedFile = req.file;
+        const userID = req.session.userID;
+
+        req.pool.getConnection(function(err, connection) {
+            if (err) {
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to save file information'
+                });
+            }
+
+            connection.query(
+                'INSERT INTO files (fileName, userID, status) VALUES (?, ?, ?)',
+                [uploadedFile.filename, userID, 'Unvalidated'],
+                function(err, result) {
+                    connection.release();
+                    if (err) {
+                        console.error('Query error:', err.message);
+                        return res.status(500).json({
+                            error: 'Database Error',
+                            message: 'Unable to save file information'
+                        });
+                    }
+                    res.status(201).json({
+                        success: true,
+                        fileID: result.insertId,
+                        fileName: uploadedFile.filename
+                    });
+                }
+            );
+        });
+    }
+);
+
+/**
+ * GET /userfiles
+ * Get files belonging to the current user
+ */
+router.get('/userfiles', requireAuth, function(req, res) {
+    const userID = req.session.userID;
+
+    req.pool.getConnection(function(err, connection) {
+        if (err) {
+            return res.status(500).json({
+                error: 'Database Error',
+                message: 'Unable to fetch files'
+            });
+        }
+
+        connection.query(
+            `SELECT f.*,
+                (SELECT COUNT(*) FROM annotations WHERE fileID = f.fileID) as annotationCount
+             FROM files f WHERE f.userID = ? ORDER BY f.fileID DESC`,
+            [userID],
+            function(err, rows) {
+                connection.release();
+                if (err) {
+                    return res.status(500).json({
+                        error: 'Database Error',
+                        message: 'Unable to fetch files'
+                    });
+                }
+                res.json(rows);
+            }
+        );
+    });
+});
+
+/**
+ * POST /userfiles
+ * Legacy endpoint for backward compatibility
+ */
+router.post('/userfiles', function(req, res) {
+    const userID = req.body.userID || (req.session && req.session.userID);
+
+    if (!userID) {
+        return res.status(401).json({
+            error: 'Unauthorized',
+            message: 'User ID is required'
+        });
     }
 
-  });
-
-});
-
-router.get('/document', function(req, res, next) {
-	res.sendFile(path.resolve(__dirname + '/../public/document.html'));
-});
-
-router.post('/redirect', function(req, res, next) {
-    var username = req.body.username_test;
-    var password = req.body.password_test;
-
-    console.log("USERNAME: " + username + " | PASSWORD: " + password);
-
-    req.pool.getConnection(function(err,connection)
-    {
-      if (err)
-      {
-        console.log("Get connection error");
-        res.sendStatus(500);
-        return;
-      }
-
-      var query = "SELECT access FROM users where username='" + username + "';";
-      connection.query(query, function(err, rows, fields)
-      {
-        connection.release();
-        if (err)
-        {
-          console.log("Query error");
-          res.sendStatus(500);
-          return;
+    req.pool.getConnection(function(err, connection) {
+        if (err) {
+            return res.status(500).json({
+                error: 'Database Error',
+                message: 'Unable to fetch files'
+            });
         }
 
-        var responseData = {
-          redirectTo: '',
+        connection.query(
+            'SELECT * FROM files WHERE userID = ? ORDER BY fileID DESC',
+            [userID],
+            function(err, rows) {
+                connection.release();
+                if (err) {
+                    return res.status(500).json({
+                        error: 'Database Error',
+                        message: 'Unable to fetch files'
+                    });
+                }
+                res.json(rows);
+            }
+        );
+    });
+});
+
+/**
+ * GET /allFiles
+ * Get all files (admin and client only)
+ */
+router.get('/allFiles', requireRole(['admin', 'client']), function(req, res) {
+    req.pool.getConnection(function(err, connection) {
+        if (err) {
+            return res.status(500).json({
+                error: 'Database Error',
+                message: 'Unable to fetch files'
+            });
+        }
+
+        connection.query(
+            `SELECT u.username, u.email, f.*,
+                (SELECT COUNT(*) FROM annotations WHERE fileID = f.fileID) as annotationCount,
+                (SELECT COUNT(*) FROM attack_flows WHERE fileID = f.fileID) as flowCount
+             FROM users u
+             INNER JOIN files f ON u.userID = f.userID
+             ORDER BY f.fileID DESC`,
+            function(err, rows) {
+                connection.release();
+                if (err) {
+                    return res.status(500).json({
+                        error: 'Database Error',
+                        message: 'Unable to fetch files'
+                    });
+                }
+                res.json(rows);
+            }
+        );
+    });
+});
+
+/**
+ * POST /download
+ * Get file path for download
+ */
+router.post('/download',
+    requireAuth,
+    validateContentType(),
+    validateBody(schemas.fileID),
+    function(req, res) {
+        const fileID = req.body.fileID;
+
+        req.pool.getConnection(function(err, connection) {
+            if (err) {
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to process download request'
+                });
+            }
+
+            connection.query(
+                'SELECT fileName FROM files WHERE fileID = ?',
+                [fileID],
+                function(err, rows) {
+                    connection.release();
+                    if (err || rows.length === 0) {
+                        return res.status(404).json({
+                            error: 'Not Found',
+                            message: 'File not found'
+                        });
+                    }
+
+                    const fileName = rows[0].fileName;
+                    const filePath = path.join('resources', fileName);
+                    res.json({ filePath: filePath, fileName: fileName });
+                }
+            );
+        });
+    }
+);
+
+/**
+ * POST /delete
+ * Delete a file (admin only)
+ */
+router.post('/delete',
+    requireRole(['admin']),
+    validateContentType(),
+    validateBody(schemas.fileID),
+    mutationLimiter,
+    function(req, res) {
+        const fileID = req.body.fileID;
+
+        req.pool.getConnection(function(err, connection) {
+            if (err) {
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to delete file'
+                });
+            }
+
+            // First get the filename to delete the physical file
+            connection.query(
+                'SELECT fileName FROM files WHERE fileID = ?',
+                [fileID],
+                function(err, rows) {
+                    if (err || rows.length === 0) {
+                        connection.release();
+                        return res.status(404).json({
+                            error: 'Not Found',
+                            message: 'File not found'
+                        });
+                    }
+
+                    const fileName = rows[0].fileName;
+
+                    // Delete from database (cascades to annotations and attack_flows)
+                    connection.query(
+                        'DELETE FROM files WHERE fileID = ?',
+                        [fileID],
+                        function(err) {
+                            connection.release();
+                            if (err) {
+                                return res.status(500).json({
+                                    error: 'Database Error',
+                                    message: 'Unable to delete file'
+                                });
+                            }
+
+                            // Attempt to delete the physical file
+                            const filePath = path.join(__dirname, '..', 'public', 'resources', fileName);
+                            fs.unlink(filePath, (err) => {
+                                if (err) {
+                                    console.error('Failed to delete physical file:', err.message);
+                                }
+                            });
+
+                            res.json({ success: true });
+                        }
+                    );
+                }
+            );
+        });
+    }
+);
+
+// =============================================================================
+// ANNOTATION ROUTES
+// =============================================================================
+
+/**
+ * GET /annotations/:fileID?
+ * Get annotations for a file
+ * Supports both path param and query param
+ */
+router.get('/annotations/:fileID?', requireAuth, function(req, res) {
+    const fileID = req.params.fileID || req.query.fileID;
+
+    if (!fileID) {
+        return res.status(400).json({
+            error: 'Validation Error',
+            message: 'File ID is required'
+        });
+    }
+
+    // Validate fileID is a number
+    const parsedFileID = parseInt(fileID, 10);
+    if (isNaN(parsedFileID) || parsedFileID <= 0) {
+        return res.status(400).json({
+            error: 'Validation Error',
+            message: 'File ID must be a positive integer'
+        });
+    }
+
+    req.pool.getConnection(function(err, connection) {
+        if (err) {
+            return res.status(500).json({
+                error: 'Database Error',
+                message: 'Unable to fetch annotations'
+            });
+        }
+
+        connection.query(
+            `SELECT a.*, t.name as tagName, t.techniqueID, t.category, t.description as tagDescription,
+                u.username as createdByUsername
+             FROM annotations a
+             LEFT JOIN tags t ON a.tagID = t.tagID
+             LEFT JOIN users u ON a.createdBy = u.userID
+             WHERE a.fileID = ?
+             ORDER BY a.orderIndex, a.annotationID`,
+            [parsedFileID],
+            function(err, rows) {
+                connection.release();
+                if (err) {
+                    return res.status(500).json({
+                        error: 'Database Error',
+                        message: 'Unable to fetch annotations'
+                    });
+                }
+                res.json(rows);
+            }
+        );
+    });
+});
+
+/**
+ * POST /annotations
+ * Create a new annotation
+ */
+router.post('/annotations',
+    requireAuth,
+    validateContentType(),
+    validateBody(schemas.createAnnotation),
+    mutationLimiter,
+    function(req, res) {
+        const { fileID, tagID, selectedText, startOffset, endOffset, customTag, notes, orderIndex } = req.body;
+        const userID = req.session.userID;
+
+        req.pool.getConnection(function(err, connection) {
+            if (err) {
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to create annotation'
+                });
+            }
+
+            connection.query(
+                `INSERT INTO annotations (fileID, tagID, selectedText, startOffset, endOffset, customTag, notes, orderIndex, createdBy, createdAt)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+                [fileID, tagID || null, selectedText || '', startOffset || 0, endOffset || 0, customTag || null, notes || '', orderIndex || 0, userID],
+                function(err, result) {
+                    connection.release();
+                    if (err) {
+                        console.error('Insert annotation error:', err.message);
+                        return res.status(500).json({
+                            error: 'Database Error',
+                            message: 'Unable to create annotation'
+                        });
+                    }
+                    res.status(201).json({
+                        success: true,
+                        annotationID: result.insertId
+                    });
+                }
+            );
+        });
+    }
+);
+
+/**
+ * PUT /annotations/:annotationID
+ * Update an existing annotation
+ */
+router.put('/annotations/:annotationID',
+    requireAuth,
+    validateContentType(),
+    validateBody(schemas.updateAnnotation),
+    mutationLimiter,
+    function(req, res) {
+        const annotationID = parseInt(req.params.annotationID, 10);
+
+        if (isNaN(annotationID) || annotationID <= 0) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'Annotation ID must be a positive integer'
+            });
+        }
+
+        const { tagID, selectedText, customTag, notes, orderIndex } = req.body;
+        const userID = req.session.userID;
+
+        req.pool.getConnection(function(err, connection) {
+            if (err) {
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to update annotation'
+                });
+            }
+
+            connection.query(
+                `UPDATE annotations SET tagID = ?, selectedText = ?, customTag = ?, notes = ?, orderIndex = ?, updatedBy = ?, updatedAt = NOW()
+                 WHERE annotationID = ?`,
+                [tagID || null, selectedText, customTag || null, notes || '', orderIndex || 0, userID, annotationID],
+                function(err) {
+                    connection.release();
+                    if (err) {
+                        return res.status(500).json({
+                            error: 'Database Error',
+                            message: 'Unable to update annotation'
+                        });
+                    }
+                    res.json({ success: true });
+                }
+            );
+        });
+    }
+);
+
+/**
+ * DELETE /annotations/:annotationID
+ * Delete an annotation
+ */
+router.delete('/annotations/:annotationID',
+    requireAuth,
+    mutationLimiter,
+    function(req, res) {
+        const annotationID = parseInt(req.params.annotationID, 10);
+
+        if (isNaN(annotationID) || annotationID <= 0) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'Annotation ID must be a positive integer'
+            });
+        }
+
+        req.pool.getConnection(function(err, connection) {
+            if (err) {
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to delete annotation'
+                });
+            }
+
+            connection.query(
+                'DELETE FROM annotations WHERE annotationID = ?',
+                [annotationID],
+                function(err) {
+                    connection.release();
+                    if (err) {
+                        return res.status(500).json({
+                            error: 'Database Error',
+                            message: 'Unable to delete annotation'
+                        });
+                    }
+                    res.json({ success: true });
+                }
+            );
+        });
+    }
+);
+
+// =============================================================================
+// ATTACK FLOW ROUTES
+// =============================================================================
+
+/**
+ * POST /generate-attack-flow
+ * Generate an Attack Flow JSON from annotations
+ */
+router.post('/generate-attack-flow',
+    requireAuth,
+    validateContentType(),
+    validateBody(schemas.generateAttackFlow),
+    mutationLimiter,
+    function(req, res) {
+        const { fileID, flowName, flowDescription } = req.body;
+        const userID = req.session.userID;
+
+        req.pool.getConnection(function(err, connection) {
+            if (err) {
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to generate attack flow'
+                });
+            }
+
+            // Get file info and annotations
+            connection.query(
+                `SELECT f.fileName, f.userID, u.username
+                 FROM files f
+                 JOIN users u ON f.userID = u.userID
+                 WHERE f.fileID = ?`,
+                [fileID],
+                function(err, fileRows) {
+                    if (err || fileRows.length === 0) {
+                        connection.release();
+                        return res.status(404).json({
+                            error: 'Not Found',
+                            message: 'File not found'
+                        });
+                    }
+
+                    const fileInfo = fileRows[0];
+
+                    // Get annotations with tags
+                    connection.query(
+                        `SELECT a.*, t.name as tagName, t.techniqueID, t.category, t.description as tagDescription
+                         FROM annotations a
+                         LEFT JOIN tags t ON a.tagID = t.tagID
+                         WHERE a.fileID = ?
+                         ORDER BY a.orderIndex, a.annotationID`,
+                        [fileID],
+                        function(err, annotations) {
+                            if (err) {
+                                connection.release();
+                                return res.status(500).json({
+                                    error: 'Database Error',
+                                    message: 'Unable to fetch annotations'
+                                });
+                            }
+
+                            // Generate Attack Flow JSON based on MITRE schema
+                            const flowID = uuidv4();
+                            const attackFlow = generateAttackFlowJSON(
+                                flowID,
+                                flowName || fileInfo.fileName,
+                                flowDescription || '',
+                                fileInfo,
+                                annotations
+                            );
+
+                            // Save the attack flow to database
+                            connection.query(
+                                `INSERT INTO attack_flows (fileID, flowName, flowJSON, status, createdBy, createdAt)
+                                 VALUES (?, ?, ?, 'Pending', ?, NOW())`,
+                                [fileID, flowName || fileInfo.fileName, JSON.stringify(attackFlow), userID],
+                                function(err, result) {
+                                    connection.release();
+                                    if (err) {
+                                        console.error('Save attack flow error:', err.message);
+                                        return res.status(500).json({
+                                            error: 'Database Error',
+                                            message: 'Unable to save attack flow'
+                                        });
+                                    }
+
+                                    res.status(201).json({
+                                        success: true,
+                                        flowID: result.insertId,
+                                        attackFlow: attackFlow
+                                    });
+                                }
+                            );
+                        }
+                    );
+                }
+            );
+        });
+    }
+);
+
+/**
+ * GET /attack-flows/:fileID
+ * Get attack flows for a specific file
+ */
+router.get('/attack-flows/:fileID', requireAuth, function(req, res) {
+    const fileID = parseInt(req.params.fileID, 10);
+
+    if (isNaN(fileID) || fileID <= 0) {
+        return res.status(400).json({
+            error: 'Validation Error',
+            message: 'File ID must be a positive integer'
+        });
+    }
+
+    req.pool.getConnection(function(err, connection) {
+        if (err) {
+            return res.status(500).json({
+                error: 'Database Error',
+                message: 'Unable to fetch attack flows'
+            });
+        }
+
+        connection.query(
+            `SELECT af.*, u.username as createdByUsername
+             FROM attack_flows af
+             LEFT JOIN users u ON af.createdBy = u.userID
+             WHERE af.fileID = ?
+             ORDER BY af.createdAt DESC`,
+            [fileID],
+            function(err, rows) {
+                connection.release();
+                if (err) {
+                    return res.status(500).json({
+                        error: 'Database Error',
+                        message: 'Unable to fetch attack flows'
+                    });
+                }
+                res.json(rows);
+            }
+        );
+    });
+});
+
+/**
+ * GET /all-attack-flows
+ * Get all attack flows (admin and client only)
+ */
+router.get('/all-attack-flows', requireRole(['admin', 'client']), function(req, res) {
+    req.pool.getConnection(function(err, connection) {
+        if (err) {
+            return res.status(500).json({
+                error: 'Database Error',
+                message: 'Unable to fetch attack flows'
+            });
+        }
+
+        connection.query(
+            `SELECT af.*, f.fileName, u.username as createdByUsername
+             FROM attack_flows af
+             JOIN files f ON af.fileID = f.fileID
+             LEFT JOIN users u ON af.createdBy = u.userID
+             ORDER BY af.createdAt DESC`,
+            function(err, rows) {
+                connection.release();
+                if (err) {
+                    return res.status(500).json({
+                        error: 'Database Error',
+                        message: 'Unable to fetch attack flows'
+                    });
+                }
+                res.json(rows);
+            }
+        );
+    });
+});
+
+/**
+ * GET /attack-flow/:flowID
+ * Get a single attack flow by ID
+ */
+router.get('/attack-flow/:flowID', requireAuth, function(req, res) {
+    const flowID = parseInt(req.params.flowID, 10);
+
+    if (isNaN(flowID) || flowID <= 0) {
+        return res.status(400).json({
+            error: 'Validation Error',
+            message: 'Flow ID must be a positive integer'
+        });
+    }
+
+    req.pool.getConnection(function(err, connection) {
+        if (err) {
+            return res.status(500).json({
+                error: 'Database Error',
+                message: 'Unable to fetch attack flow'
+            });
+        }
+
+        connection.query(
+            `SELECT af.*, f.fileName, u.username as createdByUsername
+             FROM attack_flows af
+             JOIN files f ON af.fileID = f.fileID
+             LEFT JOIN users u ON af.createdBy = u.userID
+             WHERE af.flowID = ?`,
+            [flowID],
+            function(err, rows) {
+                connection.release();
+                if (err || rows.length === 0) {
+                    return res.status(404).json({
+                        error: 'Not Found',
+                        message: 'Attack flow not found'
+                    });
+                }
+
+                const flow = rows[0];
+                try {
+                    flow.flowJSON = JSON.parse(flow.flowJSON);
+                } catch (e) {
+                    console.error('Error parsing flowJSON:', e.message);
+                }
+                res.json(flow);
+            }
+        );
+    });
+});
+
+/**
+ * POST /approve-flow/:flowID
+ * Approve an attack flow (client and admin only)
+ */
+router.post('/approve-flow/:flowID',
+    requireRole(['admin', 'client']),
+    validateContentType(),
+    validateBody(schemas.approveRejectFlow),
+    mutationLimiter,
+    function(req, res) {
+        const flowID = parseInt(req.params.flowID, 10);
+
+        if (isNaN(flowID) || flowID <= 0) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'Flow ID must be a positive integer'
+            });
+        }
+
+        const { feedback } = req.body;
+        const userID = req.session.userID;
+
+        req.pool.getConnection(function(err, connection) {
+            if (err) {
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to approve flow'
+                });
+            }
+
+            connection.query(
+                `UPDATE attack_flows SET status = 'Approved', validatedBy = ?, validatedAt = NOW(), feedback = ?
+                 WHERE flowID = ?`,
+                [userID, feedback || '', flowID],
+                function(err) {
+                    if (err) {
+                        connection.release();
+                        return res.status(500).json({
+                            error: 'Database Error',
+                            message: 'Unable to approve flow'
+                        });
+                    }
+
+                    // Also update the file status
+                    connection.query(
+                        `UPDATE files f
+                         JOIN attack_flows af ON f.fileID = af.fileID
+                         SET f.status = 'Approved'
+                         WHERE af.flowID = ?`,
+                        [flowID],
+                        function(err) {
+                            connection.release();
+                            if (err) {
+                                console.error('Failed to update file status:', err.message);
+                            }
+                            res.json({ success: true });
+                        }
+                    );
+                }
+            );
+        });
+    }
+);
+
+/**
+ * POST /reject-flow/:flowID
+ * Reject an attack flow (client and admin only)
+ */
+router.post('/reject-flow/:flowID',
+    requireRole(['admin', 'client']),
+    validateContentType(),
+    validateBody(schemas.approveRejectFlow),
+    mutationLimiter,
+    function(req, res) {
+        const flowID = parseInt(req.params.flowID, 10);
+
+        if (isNaN(flowID) || flowID <= 0) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'Flow ID must be a positive integer'
+            });
+        }
+
+        const { feedback } = req.body;
+        const userID = req.session.userID;
+
+        if (!feedback || feedback.trim() === '') {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'Feedback is required when rejecting a flow'
+            });
+        }
+
+        req.pool.getConnection(function(err, connection) {
+            if (err) {
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to reject flow'
+                });
+            }
+
+            connection.query(
+                `UPDATE attack_flows SET status = 'Rejected', validatedBy = ?, validatedAt = NOW(), feedback = ?
+                 WHERE flowID = ?`,
+                [userID, feedback, flowID],
+                function(err) {
+                    connection.release();
+                    if (err) {
+                        return res.status(500).json({
+                            error: 'Database Error',
+                            message: 'Unable to reject flow'
+                        });
+                    }
+                    res.json({ success: true });
+                }
+            );
+        });
+    }
+);
+
+/**
+ * GET /download-flow/:flowID
+ * Download an attack flow as JSON
+ */
+router.get('/download-flow/:flowID', requireAuth, function(req, res) {
+    const flowID = parseInt(req.params.flowID, 10);
+
+    if (isNaN(flowID) || flowID <= 0) {
+        return res.status(400).json({
+            error: 'Validation Error',
+            message: 'Flow ID must be a positive integer'
+        });
+    }
+
+    req.pool.getConnection(function(err, connection) {
+        if (err) {
+            return res.status(500).json({
+                error: 'Database Error',
+                message: 'Unable to download flow'
+            });
+        }
+
+        connection.query(
+            'SELECT flowName, flowJSON FROM attack_flows WHERE flowID = ?',
+            [flowID],
+            function(err, rows) {
+                connection.release();
+                if (err || rows.length === 0) {
+                    return res.status(404).json({
+                        error: 'Not Found',
+                        message: 'Attack flow not found'
+                    });
+                }
+
+                const flow = rows[0];
+                const fileName = `${flow.flowName.replace(/[^a-zA-Z0-9]/g, '_')}_attack_flow.json`;
+
+                res.setHeader('Content-Type', 'application/json');
+                res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+                res.send(flow.flowJSON);
+            }
+        );
+    });
+});
+
+// =============================================================================
+// DOCUMENT ROUTES
+// =============================================================================
+
+/**
+ * GET /annotate/:fileID
+ * Serve the annotation editor page
+ */
+router.get('/annotate/:fileID', requireAuth, function(req, res) {
+    res.sendFile(path.resolve(__dirname + '/../public/annotate.html'));
+});
+
+/**
+ * GET /file-info/:fileID
+ * Get file information for annotation
+ */
+router.get('/file-info/:fileID', requireAuth, function(req, res) {
+    const fileID = parseInt(req.params.fileID, 10);
+
+    if (isNaN(fileID) || fileID <= 0) {
+        return res.status(400).json({
+            error: 'Validation Error',
+            message: 'File ID must be a positive integer'
+        });
+    }
+
+    req.pool.getConnection(function(err, connection) {
+        if (err) {
+            return res.status(500).json({
+                error: 'Database Error',
+                message: 'Unable to fetch file information'
+            });
+        }
+
+        connection.query(
+            `SELECT f.*, u.username
+             FROM files f
+             JOIN users u ON f.userID = u.userID
+             WHERE f.fileID = ?`,
+            [fileID],
+            function(err, rows) {
+                connection.release();
+                if (err || rows.length === 0) {
+                    return res.status(404).json({
+                        error: 'Not Found',
+                        message: 'File not found'
+                    });
+                }
+                res.json(rows[0]);
+            }
+        );
+    });
+});
+
+/**
+ * POST /submit-for-validation/:fileID
+ * Submit a file for validation
+ */
+router.post('/submit-for-validation/:fileID',
+    requireAuth,
+    mutationLimiter,
+    function(req, res) {
+        const fileID = parseInt(req.params.fileID, 10);
+
+        if (isNaN(fileID) || fileID <= 0) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'File ID must be a positive integer'
+            });
+        }
+
+        req.pool.getConnection(function(err, connection) {
+            if (err) {
+                return res.status(500).json({
+                    error: 'Database Error',
+                    message: 'Unable to submit for validation'
+                });
+            }
+
+            connection.query(
+                `UPDATE files SET status = 'Pending' WHERE fileID = ?`,
+                [fileID],
+                function(err) {
+                    connection.release();
+                    if (err) {
+                        return res.status(500).json({
+                            error: 'Database Error',
+                            message: 'Unable to submit for validation'
+                        });
+                    }
+                    res.json({ success: true });
+                }
+            );
+        });
+    }
+);
+
+// =============================================================================
+// HELPER FUNCTIONS
+// =============================================================================
+
+/**
+ * Generate Attack Flow JSON based on MITRE Attack Flow schema (STIX 2.1)
+ *
+ * @param {string} flowID - Unique identifier for the flow
+ * @param {string} name - Name of the attack flow
+ * @param {string} description - Description of the attack flow
+ * @param {Object} fileInfo - Information about the source file
+ * @param {Array} annotations - Array of annotations to convert to attack actions
+ * @returns {Object} STIX 2.1 compliant Attack Flow bundle
+ */
+function generateAttackFlowJSON(flowID, name, description, fileInfo, annotations) {
+    const now = new Date().toISOString();
+
+    // Create the base Attack Flow bundle structure
+    const attackFlow = {
+        type: "bundle",
+        id: `bundle--${flowID}`,
+        spec_version: "2.1",
+        created: now,
+        modified: now,
+        objects: []
+    };
+
+    // Add the attack-flow object
+    const identityId = `identity--${uuidv4()}`;
+    const flowObject = {
+        type: "attack-flow",
+        id: `attack-flow--${flowID}`,
+        spec_version: "2.1",
+        created: now,
+        modified: now,
+        name: name,
+        description: description || `Attack flow generated from ${fileInfo.fileName}`,
+        scope: "incident",
+        start_refs: [],
+        created_by_ref: identityId
+    };
+    attackFlow.objects.push(flowObject);
+
+    // Add identity for the creator
+    const identity = {
+        type: "identity",
+        id: identityId,
+        spec_version: "2.1",
+        created: now,
+        modified: now,
+        name: fileInfo.username,
+        identity_class: "individual"
+    };
+    attackFlow.objects.push(identity);
+
+    // Convert annotations to attack-action objects
+    let previousActionId = null;
+    annotations.forEach((annotation, index) => {
+        const actionId = `attack-action--${uuidv4()}`;
+
+        const action = {
+            type: "attack-action",
+            id: actionId,
+            spec_version: "2.1",
+            created: now,
+            modified: now,
+            name: annotation.tagName || annotation.customTag || `Action ${index + 1}`,
+            description: annotation.selectedText || annotation.notes || '',
+            technique_id: annotation.techniqueID || null,
+            technique_ref: annotation.techniqueID ? `attack-pattern--${annotation.techniqueID}` : null
         };
 
-        switch (rows[0].access) {
-          case 'admin':
-            console.log("is an admin");
-            responseData.redirectTo = '/home-admin.html', // Specify the URL to redirect to
-            res.json(responseData);
-            break;
-          case 'client':
-            console.log("is a client");
-            responseData.redirectTo = '/home-client.html', // Specify the URL to redirect to
-            res.json(responseData);
-            break;
-          case 'annotator':
-            console.log("is an annotator");
-            responseData.redirectTo = '/home-annotator.html', // Specify the URL to redirect to
-            res.json(responseData);
-            break;
+        // Add tactic/category information if available
+        if (annotation.category) {
+            action.tactic_id = annotation.category;
         }
 
+        attackFlow.objects.push(action);
 
-      });
-    });
-});
-
-router.post("/upload", upload.single('file'), (req, res) => {
-  var uploadedFile = req.file;
-  var ID = req.body.userID
-  console.log("file name: " + uploadedFile.filename);
-  console.log("userID: " + ID);
-
-  req.pool.getConnection(function(err,connection)
-  {
-    if (err)
-    {
-      console.log("Get connection error");
-      res.sendStatus(500);
-      return;
-    }
-
-    var query = "INSERT INTO files (filename, userID) VALUES ('" + uploadedFile.filename + "', '" + ID + "');";
-    connection.query(query, function(err, rows, fields)
-    {
-      connection.release();
-      if (err)
-      {
-        console.log("Query error");
-        res.sendStatus(500);
-        return;
-      }
-      console.log("File uploaded");
-      res.sendStatus(204);
-    });
-  });
-});
-
-router.post('/userfiles', function(req, res, next) {
-  var id = req.body.userID;
-  console.log("User ID is: " + id);
-  req.pool.getConnection(function(err,connection) {
-    if (err) {
-      console.log(err);
-      return;
-    }
-
-    var query = "select * from files where userID = ?";
-
-      connection.query(query, [id], function(err, rows, fields) {
-        connection.release();
-        if (err) {
-          console.log(err);
-          return;
+        // Set as start ref if first action
+        if (index === 0) {
+            flowObject.start_refs.push(actionId);
         }
-        res.json(rows);
-        });
-    });
-});
 
-router.post('/download', function (req, res) {
-  var id = req.body.fileID;
-  console.log("File ID is: " + id);
-
-  req.pool.getConnection(function (err, connection) {
-    if (err) {
-      console.log(err);
-      return;
-    }
-
-    var query = "SELECT * FROM files WHERE fileID = ?";
-
-    connection.query(query, [id], function (err, rows, fields) {
-      connection.release();
-      if (err) {
-        console.log(err);
-        return;
-      }
-
-      var name = rows[0].fileName;
-      console.log(name);
-
-      // Construct the file path
-      const filePath = path.join("resources", name);
-      res.status(200).json({ filePath: filePath, fileName: name });
-    });
-  });
-});
-
-router.get('/allFiles', function(req, res, next) {
-  req.pool.getConnection(function(err,connection) {
-    if (err) {
-      console.log(err);
-      return;
-    }
-
-    var query = "SELECT users.*, files.* FROM users INNER JOIN files ON users.userID = files.userID;";
-
-      connection.query(query, function(err, rows, fields) {
-        connection.release();
-        if (err) {
-          console.log(err);
-          return;
+        // Create relationship to previous action (sequential flow)
+        if (previousActionId) {
+            const relationship = {
+                type: "relationship",
+                id: `relationship--${uuidv4()}`,
+                spec_version: "2.1",
+                created: now,
+                modified: now,
+                relationship_type: "effect-of",
+                source_ref: actionId,
+                target_ref: previousActionId
+            };
+            attackFlow.objects.push(relationship);
         }
-        res.json(rows);
-        });
+
+        previousActionId = actionId;
     });
-});
 
-router.post('/delete', function(req, res, next) {
-  var id = req.body.fileID;
-  console.log("Deleting File ID = " + id);
-  req.pool.getConnection(function(err,connection) {
-    if (err) {
-      console.log(err);
-      return;
-    }
+    return attackFlow;
+}
 
-    var query = "DELETE FROM files WHERE fileID = ?;";
-
-      connection.query(query, [id], function(err, rows, fields) {
-        connection.release();
-        if (err) {
-          console.log(err);
-          res.sendStatis(500);
-          return;
-        }
-        res.sendStatus(204);
-        });
-    });
-})
+// =============================================================================
+// EXPORTS
+// =============================================================================
 
 module.exports = router;
