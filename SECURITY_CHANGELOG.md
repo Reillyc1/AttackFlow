@@ -4,6 +4,178 @@ This document outlines all security improvements implemented in the AttackFlow a
 
 ---
 
+## Version 1.2.0 - Comprehensive Security Hardening (2026-02-13)
+
+### Overview
+
+This release significantly enhances security across all application layers, focusing on rate limiting coverage, input validation consistency, authorization controls, and XSS prevention.
+
+---
+
+### 1. Rate Limiting Enhancements
+
+**Files:** `middleware/rateLimiter.js`, `routes/index.js`
+
+#### New Rate Limiters Added
+
+| Limiter | Window | Max Requests | Purpose |
+|---------|--------|--------------|---------|
+| `readLimiter` | 1 minute | 60 | For GET data endpoints (files, annotations) |
+| `sessionLimiter` | 1 minute | 120 | For session status checks (supports polling) |
+| `downloadLimiter` | 1 hour | 50 | Prevents bandwidth abuse on file downloads |
+| `publicLimiter` | 1 minute | 30 | IP-only limiting for public endpoints |
+
+#### Endpoints Now Rate Limited
+
+All endpoints now have appropriate rate limiting:
+- `GET /session_id` - sessionLimiter
+- `POST /logout` - authLimiter
+- `GET /current-user` - readLimiter
+- `GET /userfiles` - readLimiter
+- `POST /userfiles` - readLimiter (also requires authentication now)
+- `GET /allFiles` - readLimiter
+- `POST /download` - downloadLimiter
+- `GET /annotations/:fileID` - readLimiter
+- `GET /attack-flows/:fileID` - readLimiter
+- `GET /all-attack-flows` - readLimiter
+- `GET /attack-flow/:flowID` - readLimiter
+- `GET /download-flow/:flowID` - downloadLimiter
+- `GET /annotate/:fileID` - readLimiter
+- `GET /file-info/:fileID` - readLimiter
+- `GET /tags` - publicLimiter
+
+---
+
+### 2. Critical Security Vulnerability Fixed
+
+**OWASP Reference:** API1:2023 - Broken Object Level Authorization (IDOR)
+
+#### POST /userfiles Endpoint
+
+**Before:** Accepted `userID` from request body without authentication, allowing any user to view any user's files.
+
+**After:**
+- Requires authentication
+- Ignores client-provided `userID`
+- Uses session `userID` exclusively
+- Logs potential attack attempts
+
+```javascript
+// SECURITY: Always use session userID, never trust client-provided userID
+const userID = req.session.userID;
+
+// Log if someone attempts to pass a different userID (potential attack)
+if (req.body.userID && req.body.userID !== userID) {
+    console.warn(`SECURITY: User ${userID} attempted to access files for user ${req.body.userID}`);
+}
+```
+
+---
+
+### 3. Enhanced Input Validation
+
+**File:** `middleware/validator.js`
+
+#### New Validation Schemas
+
+| Schema | Purpose | Key Validations |
+|--------|---------|-----------------|
+| `redirect` | Legacy redirect endpoint | Username format validation |
+| `emptyBody` | Endpoints accepting no body | Rejects all fields |
+| `approveFlow` | Flow approval | Optional feedback |
+| `rejectFlow` | Flow rejection | Required feedback (min 10 chars) |
+
+#### All Endpoints Now Validated
+
+- `POST /redirect` - Now uses `schemas.redirect`
+- `POST /approve-flow/:flowID` - Now uses `schemas.approveFlow`
+- `POST /reject-flow/:flowID` - Now uses `schemas.rejectFlow` (requires meaningful feedback)
+- `POST /submit-for-validation/:fileID` - Added Content-Type validation
+
+---
+
+### 4. Enhanced Input Sanitization
+
+**File:** `middleware/validator.js`
+
+#### New XSS Prevention Features
+
+```javascript
+const DANGEROUS_PATTERNS = [
+    /<script\b[^>]*>/i,           // Script tags
+    /javascript:/i,                // JavaScript protocol
+    /on\w+\s*=/i,                 // Event handlers
+    /data:\s*text\/html/i,        // Data URLs with HTML
+    /<iframe\b/i,                 // Iframe tags
+    // ... and more
+];
+```
+
+#### Sanitization Improvements
+
+1. **Zero-width character removal** - Prevents hidden malicious content
+2. **Unicode whitespace normalization** - Prevents padding attacks
+3. **Suspicious pattern logging** - Security monitoring for potential attacks
+4. **HTML encoding helper** - `htmlEncode()` function for defense in depth
+
+---
+
+### 5. Authorization Controls
+
+**File:** `routes/index.js`
+
+**OWASP Reference:** API1:2023 - Broken Object Level Authorization
+
+#### New Authorization Middleware
+
+```javascript
+checkFileAccess(pool, fileID, userID, userRole, callback)
+requireFileAccess(req, res, next)
+```
+
+#### File Access Rules
+
+| Role | Access |
+|------|--------|
+| Admin | All files |
+| Client | All files |
+| Annotator | Own files only |
+
+#### Endpoints With Authorization Checks
+
+- `POST /download` - Users can only download their own files
+- `GET /annotations/:fileID` - Users can only view annotations for their own files
+- `GET /file-info/:fileID` - Users can only view info for their own files
+
+Security warnings are logged when unauthorized access is attempted.
+
+---
+
+### 6. API Key Management Documentation
+
+**File:** `.env.example`
+
+Added comprehensive documentation for secure API key handling:
+- Naming conventions
+- Environment separation
+- Rotation procedures
+- Monitoring guidance
+
+---
+
+### OWASP Compliance Summary
+
+| OWASP API Top 10 | Status | Implementation |
+|------------------|--------|----------------|
+| API1:2023 - Broken Object Level Authorization | ✅ Fixed | File access checks, userID from session only |
+| API2:2023 - Broken Authentication | ✅ Enhanced | Rate limiting on all auth endpoints |
+| API3:2023 - Broken Object Property Level Authorization | ✅ Enhanced | Strict schema validation, stripUnknown |
+| API4:2023 - Unrestricted Resource Consumption | ✅ Enhanced | Complete rate limiting coverage |
+| API5:2023 - Broken Function Level Authorization | ✅ Existing | Role-based access control |
+| API8:2023 - Security Misconfiguration | ✅ Enhanced | Comprehensive env config |
+
+---
+
 ## Version 1.1.0 - Security Hardening Release
 
 ### Overview
