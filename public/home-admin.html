@@ -23,24 +23,40 @@
 </table>
 
 <script>
+  /**
+   * SECURITY: HTML escape function to prevent XSS attacks
+   * Escapes HTML special characters in user-controlled data
+   */
+  function escapeHtml(text) {
+    if (text === null || text === undefined) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
   function getFiles() {
     var xhttp = new XMLHttpRequest();
     xhttp.onreadystatechange = function() {
             if (this.readyState == 4 && this.status == 200) {
                         const obj = JSON.parse(this.responseText);
                     for (let i = 0; i < obj.length; i++) {
-                      var user = obj[i].username;
-                      var files = obj[i].fileName;
-                      var stat = obj[i].status;
+                      // SECURITY: Escape all user-controlled data before rendering
+                      var user = escapeHtml(obj[i].username);
+                      var files = obj[i].fileName || '';
+                      var stat = escapeHtml(obj[i].status);
                       var parts = files.split(" - ");
                       // Extract the file name and timestamp
-                      var fileName = parts[0];
-                      var timestamp = parseInt(parts[1].match(/\d+/)[0]);
+                      var fileName = escapeHtml(parts[0]);
+                      var timestamp = parts[1] ? parseInt(parts[1].match(/\d+/)?.[0] || 0) : 0;
 
                       // Convert the timestamp to a Date
-                      const date = new Date(timestamp);
-                      document.getElementById("files").innerHTML += `<tr><td>` + user + `</td><td>` + fileName + `</td><td>` + date + `</td><td>` + stat + `</td><td class="centered pointer">
-                        <i class="fa fa-download" onclick=download(${obj[i].fileID})></i></td><td class="centered pointer"><i class="fa fa-close" onclick=deleteFile(${obj[i].fileID})></i></td></tr>`
+                      const date = timestamp ? new Date(timestamp) : 'Unknown';
+                      // SECURITY: fileID is validated as integer, safe to use directly
+                      var fileID = parseInt(obj[i].fileID, 10);
+                      if (isNaN(fileID)) continue;  // Skip invalid entries
+
+                      document.getElementById("files").innerHTML += `<tr><td>${user}</td><td>${fileName}</td><td>${date}</td><td>${stat}</td><td class="centered pointer">
+                        <i class="fa fa-download" onclick="download(${fileID})"></i></td><td class="centered pointer"><i class="fa fa-close" onclick="deleteFile(${fileID})"></i></td></tr>`
             }
           }
   };

@@ -284,6 +284,17 @@
   <script>
     var sessionData = null;
 
+    /**
+     * SECURITY: HTML escape function to prevent XSS attacks
+     * Escapes HTML special characters in user-controlled data
+     */
+    function escapeHtml(text) {
+      if (text === null || text === undefined) return '';
+      var div = document.createElement('div');
+      div.textContent = String(text);
+      return div.innerHTML;
+    }
+
     function init() {
       getSessionData();
     }
@@ -356,17 +367,24 @@
         // Annotation count
         var annotationCount = file.annotationCount || 0;
 
+        // SECURITY: Escape all user-controlled data, validate fileID
+        var safeDisplayName = escapeHtml(displayName);
+        var safeUploadDate = escapeHtml(uploadDate);
+        var safeStatusText = escapeHtml(statusText);
+        var safeFileID = parseInt(file.fileID, 10);
+        if (isNaN(safeFileID)) return;  // Skip invalid entries
+
         html += `
           <tr>
-            <td>${displayName}</td>
-            <td>${uploadDate}</td>
+            <td>${safeDisplayName}</td>
+            <td>${safeUploadDate}</td>
             <td><span class="annotation-count">${annotationCount} annotations</span></td>
-            <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+            <td><span class="status-badge ${statusClass}">${safeStatusText}</span></td>
             <td class="centered">
-              <button class="action-btn annotate" onclick="openAnnotator(${file.fileID})">
+              <button class="action-btn annotate" onclick="openAnnotator(${safeFileID})">
                 <i class="fa fa-edit"></i> Annotate
               </button>
-              <button class="action-btn download" onclick="downloadFile(${file.fileID})">
+              <button class="action-btn download" onclick="downloadFile(${safeFileID})">
                 <i class="fa fa-download"></i> Download
               </button>
             </td>

@@ -427,14 +427,26 @@ router.post('/login',
                     const user = rows[0];
 
                     try {
-                        // Check if password is hashed (bcrypt hashes start with $2b$ or $2a$)
+                        // SECURITY: Only accept bcrypt-hashed passwords
+                        // Plaintext passwords are rejected - users must reset their password
                         let isMatch = false;
-                        if (user.password.startsWith('$2b$') || user.password.startsWith('$2a$')) {
+                        const isHashedPassword = user.password.startsWith('$2b$') || user.password.startsWith('$2a$');
+
+                        if (isHashedPassword) {
+                            // Secure: Compare against bcrypt hash
                             isMatch = await bcrypt.compare(password, user.password);
                         } else {
-                            // Legacy plaintext comparison (for migration from old system)
-                            // In production, this should trigger a password hash update
-                            isMatch = (user.password === password);
+                            // SECURITY: Legacy plaintext passwords are no longer accepted
+                            // Log security event and reject login
+                            console.warn(
+                                `SECURITY: User "${user.username}" has unhashed password. ` +
+                                `Password must be reset before login is allowed.`
+                            );
+                            // Return generic error to prevent information disclosure
+                            return res.status(401).json({
+                                error: 'Authentication Failed',
+                                message: 'Invalid username or password. If you have an older account, please contact an administrator to reset your password.'
+                            });
                         }
 
                         if (isMatch) {
@@ -513,16 +525,22 @@ router.post('/logout', authLimiter, function(req, res) {
  * Create new user account
  *
  * Rate limited: 5 attempts per 15 minutes per IP
+ *
+ * SECURITY: Users can only self-register as 'annotator' role.
+ * Admin/client roles must be assigned by an existing admin.
+ * This prevents privilege escalation attacks.
  */
 router.post('/signup',
     authLimiter,
     validateContentType(),
     validateBody(schemas.signup),
     async function(req, res, next) {
-        const { username, password, email, access } = req.body;
+        const { username, password, email } = req.body;
 
-        // Default role is annotator (validated by schema)
-        const userRole = access || 'annotator';
+        // SECURITY: Force 'annotator' role for self-registration
+        // Admin and client roles must be assigned by an admin via separate endpoint
+        // This prevents privilege escalation via self-registration
+        const userRole = 'annotator';
 
         try {
             // Hash password with configured salt rounds
@@ -1096,12 +1114,18 @@ router.get('/annotations/:fileID?', requireAuth, readLimiter, function(req, res)
 /**
  * POST /annotations
  * Create a new annotation
+ *
+ * Rate limited: 30 mutations per minute
+ * Security: Requires authentication, verifies file ownership before creating annotation
+ *
+ * OWASP Reference: API1:2023 - Broken Object Level Authorization
  */
 router.post('/annotations',
     requireAuth,
     validateContentType(),
     validateBody(schemas.createAnnotation),
     mutationLimiter,
+    requireFileAccess,  // SECURITY: Verify user has access to the file
     function(req, res) {
         const { fileID, tagID, selectedText, startOffset, endOffset, customTag, notes, orderIndex } = req.body;
         const userID = req.session.userID;
@@ -1140,6 +1164,11 @@ router.post('/annotations',
 /**
  * PUT /annotations/:annotationID
  * Update an existing annotation
+ *
+ * Rate limited: 30 mutations per minute
+ * Security: Verifies user has access to the file containing the annotation
+ *
+ * OWASP Reference: API1:2023 - Broken Object Level Authorization
  */
 router.put('/annotations/:annotationID',
     requireAuth,
@@ -1167,19 +1196,63 @@ router.put('/annotations/:annotationID',
                 });
             }
 
+            // SECURITY: First verify user has access to the file containing this annotation
             connection.query(
-                `UPDATE annotations SET tagID = ?, selectedText = ?, customTag = ?, notes = ?, orderIndex = ?, updatedBy = ?, updatedAt = NOW()
-                 WHERE annotationID = ?`,
-                [tagID || null, selectedText, customTag || null, notes || '', orderIndex || 0, userID, annotationID],
-                function(err) {
-                    connection.release();
-                    if (err) {
-                        return res.status(500).json({
-                            error: 'Database Error',
-                            message: 'Unable to update annotation'
+                'SELECT a.fileID, f.userID as fileOwner FROM annotations a JOIN files f ON a.fileID = f.fileID WHERE a.annotationID = ?',
+                [annotationID],
+                function(err, rows) {
+                    if (err || rows.length === 0) {
+                        connection.release();
+                        return res.status(404).json({
+                            error: 'Not Found',
+                            message: 'Annotation not found'
                         });
                     }
-                    res.json({ success: true });
+
+                    // Get user's role to check authorization
+                    connection.query(
+                        'SELECT access FROM users WHERE userID = ?',
+                        [userID],
+                        function(err, userRows) {
+                            if (err || userRows.length === 0) {
+                                connection.release();
+                                return res.status(500).json({
+                                    error: 'Authorization Error',
+                                    message: 'Unable to verify permissions'
+                                });
+                            }
+
+                            const userRole = userRows[0].access;
+                            const fileOwner = rows[0].fileOwner;
+
+                            // Check authorization: admin/client can edit any, annotators only their own files
+                            if (userRole !== 'admin' && userRole !== 'client' && fileOwner !== userID) {
+                                connection.release();
+                                console.warn(`SECURITY: User ${userID} attempted to modify annotation ${annotationID} on file owned by ${fileOwner}`);
+                                return res.status(403).json({
+                                    error: 'Forbidden',
+                                    message: 'You do not have permission to modify this annotation'
+                                });
+                            }
+
+                            // Authorized - proceed with update
+                            connection.query(
+                                `UPDATE annotations SET tagID = ?, selectedText = ?, customTag = ?, notes = ?, orderIndex = ?, updatedBy = ?, updatedAt = NOW()
+                                 WHERE annotationID = ?`,
+                                [tagID || null, selectedText, customTag || null, notes || '', orderIndex || 0, userID, annotationID],
+                                function(err) {
+                                    connection.release();
+                                    if (err) {
+                                        return res.status(500).json({
+                                            error: 'Database Error',
+                                            message: 'Unable to update annotation'
+                                        });
+                                    }
+                                    res.json({ success: true });
+                                }
+                            );
+                        }
+                    );
                 }
             );
         });
@@ -1189,6 +1262,11 @@ router.put('/annotations/:annotationID',
 /**
  * DELETE /annotations/:annotationID
  * Delete an annotation
+ *
+ * Rate limited: 30 mutations per minute
+ * Security: Verifies user has access to the file containing the annotation
+ *
+ * OWASP Reference: API1:2023 - Broken Object Level Authorization
  */
 router.delete('/annotations/:annotationID',
     requireAuth,
@@ -1203,6 +1281,8 @@ router.delete('/annotations/:annotationID',
             });
         }
 
+        const userID = req.session.userID;
+
         req.pool.getConnection(function(err, connection) {
             if (err) {
                 return res.status(500).json({
@@ -1211,18 +1291,62 @@ router.delete('/annotations/:annotationID',
                 });
             }
 
+            // SECURITY: First verify user has access to the file containing this annotation
             connection.query(
-                'DELETE FROM annotations WHERE annotationID = ?',
+                'SELECT a.fileID, f.userID as fileOwner FROM annotations a JOIN files f ON a.fileID = f.fileID WHERE a.annotationID = ?',
                 [annotationID],
-                function(err) {
-                    connection.release();
-                    if (err) {
-                        return res.status(500).json({
-                            error: 'Database Error',
-                            message: 'Unable to delete annotation'
+                function(err, rows) {
+                    if (err || rows.length === 0) {
+                        connection.release();
+                        return res.status(404).json({
+                            error: 'Not Found',
+                            message: 'Annotation not found'
                         });
                     }
-                    res.json({ success: true });
+
+                    // Get user's role to check authorization
+                    connection.query(
+                        'SELECT access FROM users WHERE userID = ?',
+                        [userID],
+                        function(err, userRows) {
+                            if (err || userRows.length === 0) {
+                                connection.release();
+                                return res.status(500).json({
+                                    error: 'Authorization Error',
+                                    message: 'Unable to verify permissions'
+                                });
+                            }
+
+                            const userRole = userRows[0].access;
+                            const fileOwner = rows[0].fileOwner;
+
+                            // Check authorization: admin/client can delete any, annotators only their own files
+                            if (userRole !== 'admin' && userRole !== 'client' && fileOwner !== userID) {
+                                connection.release();
+                                console.warn(`SECURITY: User ${userID} attempted to delete annotation ${annotationID} on file owned by ${fileOwner}`);
+                                return res.status(403).json({
+                                    error: 'Forbidden',
+                                    message: 'You do not have permission to delete this annotation'
+                                });
+                            }
+
+                            // Authorized - proceed with delete
+                            connection.query(
+                                'DELETE FROM annotations WHERE annotationID = ?',
+                                [annotationID],
+                                function(err) {
+                                    connection.release();
+                                    if (err) {
+                                        return res.status(500).json({
+                                            error: 'Database Error',
+                                            message: 'Unable to delete annotation'
+                                        });
+                                    }
+                                    res.json({ success: true });
+                                }
+                            );
+                        }
+                    );
                 }
             );
         });
@@ -1236,12 +1360,18 @@ router.delete('/annotations/:annotationID',
 /**
  * POST /generate-attack-flow
  * Generate an Attack Flow JSON from annotations
+ *
+ * Rate limited: 30 mutations per minute
+ * Security: Requires authentication, verifies file ownership
+ *
+ * OWASP Reference: API1:2023 - Broken Object Level Authorization
  */
 router.post('/generate-attack-flow',
     requireAuth,
     validateContentType(),
     validateBody(schemas.generateAttackFlow),
     mutationLimiter,
+    requireFileAccess,  // SECURITY: Verify user has access to the file
     function(req, res) {
         const { fileID, flowName, flowDescription } = req.body;
         const userID = req.session.userID;

@@ -124,12 +124,17 @@ CREATE TABLE `attack_flows` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =====================================================
--- Insert Default Users (passwords will be hashed on first login with new system)
+-- Insert Default Users (passwords are bcrypt hashed)
+-- SECURITY: All passwords must be bcrypt hashed - plaintext passwords are rejected
+-- Default passwords (change in production!):
+--   admin: admin123
+--   validator: validator123
+--   annotator: annotator123
 -- =====================================================
 INSERT INTO `users` (`email`, `password`, `username`, `access`) VALUES
-('admin@attackflow.local', 'admin123', 'admin', 'admin'),
-('validator@attackflow.local', 'validator123', 'validator', 'client'),
-('annotator@attackflow.local', 'annotator123', 'annotator', 'annotator');
+('admin@attackflow.local', '$2b$12$Q/CCwXINs3VQl/bLooo5yuwuQjBIth9wyndJ7vtMSt1wCNeNvrQnu', 'admin', 'admin'),
+('validator@attackflow.local', '$2b$12$gMcXt4FM37cPKXpPcSRuoe3iqegjO6mXnTEM1qxKxrVSLdILdyvKm', 'validator', 'client'),
+('annotator@attackflow.local', '$2b$12$uqf5BSPTHEiLsVB4u8J./OTfxSkALlqbrjHDoQ8OYvFArW2OA69B.', 'annotator', 'annotator');
 
 -- =====================================================
 -- Insert MITRE ATT&CK Techniques (Predefined Tags)

@@ -412,6 +412,17 @@
     var currentFlowID = null;
     var allFlows = [];
 
+    /**
+     * SECURITY: HTML escape function to prevent XSS attacks
+     * Escapes HTML special characters in user-controlled data
+     */
+    function escapeHtml(text) {
+      if (text === null || text === undefined) return '';
+      var div = document.createElement('div');
+      div.textContent = String(text);
+      return div.innerHTML;
+    }
+
     function init() {
       getSessionData();
     }
@@ -506,19 +517,27 @@
           case 'rejected': statusClass = 'status-rejected'; break;
         }
 
+        // SECURITY: Escape all user-controlled data, validate fileID
+        var safeUsername = escapeHtml(file.username || 'Unknown');
+        var safeDisplayName = escapeHtml(displayName);
+        var safeUploadDate = escapeHtml(uploadDate);
+        var safeStatusText = escapeHtml(statusText);
+        var safeFileID = parseInt(file.fileID, 10);
+        if (isNaN(safeFileID)) return;
+
         html += `
           <tr>
-            <td>${file.username || 'Unknown'}</td>
-            <td>${displayName}</td>
-            <td>${uploadDate}</td>
+            <td>${safeUsername}</td>
+            <td>${safeDisplayName}</td>
+            <td>${safeUploadDate}</td>
             <td><span class="annotation-preview">${file.annotationCount || 0} annotations</span></td>
             <td><span class="annotation-preview">${file.flowCount || 0} flows</span></td>
-            <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+            <td><span class="status-badge ${statusClass}">${safeStatusText}</span></td>
             <td class="centered">
-              <button class="btn btn-primary" onclick="viewAnnotations(${file.fileID})">
+              <button class="btn btn-primary" onclick="viewAnnotations(${safeFileID})">
                 <i class="fa fa-eye"></i> View
               </button>
-              <button class="btn btn-secondary" onclick="downloadFile(${file.fileID})">
+              <button class="btn btn-secondary" onclick="downloadFile(${safeFileID})">
                 <i class="fa fa-download"></i>
               </button>
             </td>
@@ -555,21 +574,30 @@
 
         var createdAt = flow.createdAt ? new Date(flow.createdAt).toLocaleString() : 'Unknown';
 
+        // SECURITY: Escape all user-controlled data, validate flowID
+        var safeFlowName = escapeHtml(flow.flowName || 'Unnamed Flow');
+        var safeDisplayName = escapeHtml(displayName);
+        var safeCreatedBy = escapeHtml(flow.createdByUsername || 'Unknown');
+        var safeCreatedAt = escapeHtml(createdAt);
+        var safeStatusText = escapeHtml(statusText);
+        var safeFlowID = parseInt(flow.flowID, 10);
+        if (isNaN(safeFlowID)) return;
+
         html += `
           <tr>
-            <td>${flow.flowName || 'Unnamed Flow'}</td>
-            <td>${displayName}</td>
-            <td>${flow.createdByUsername || 'Unknown'}</td>
-            <td>${createdAt}</td>
-            <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+            <td>${safeFlowName}</td>
+            <td>${safeDisplayName}</td>
+            <td>${safeCreatedBy}</td>
+            <td>${safeCreatedAt}</td>
+            <td><span class="status-badge ${statusClass}">${safeStatusText}</span></td>
             <td class="centered">
-              <button class="btn btn-primary" onclick="openReviewModal(${flow.flowID})">
+              <button class="btn btn-primary" onclick="openReviewModal(${safeFlowID})">
                 <i class="fa fa-gavel"></i> Review
               </button>
-              <button class="btn btn-secondary" onclick="downloadFlow(${flow.flowID})">
+              <button class="btn btn-secondary" onclick="downloadFlow(${safeFlowID})">
                 <i class="fa fa-download"></i> JSON
               </button>
-              <button class="btn btn-secondary" onclick="visualizeFlow(${flow.flowID})">
+              <button class="btn btn-secondary" onclick="visualizeFlow(${safeFlowID})">
                 <i class="fa fa-sitemap"></i> View
               </button>
             </td>

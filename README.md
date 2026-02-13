@@ -143,52 +143,81 @@ The database script creates test accounts for development:
 ## API Endpoints
 
 ### Authentication
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/login` | User authentication |
-| POST | `/logout` | End user session |
-| POST | `/signup` | Create new account |
+| Method | Endpoint | Rate Limit | Description |
+|--------|----------|------------|-------------|
+| POST | `/login` | 5/15min | User authentication |
+| POST | `/logout` | 5/15min | End user session |
+| POST | `/signup` | 5/15min | Create new account |
+| GET | `/session_id` | 120/min | Get current session info |
+| GET | `/current-user` | 60/min | Get authenticated user details |
 
 ### Files
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/upload` | Upload incident report |
-| GET | `/userfiles` | Get user's files |
-| GET | `/allFiles` | Get all files (admin/client) |
-| GET | `/file-content/:fileID` | Get file content |
-| DELETE | `/delete-file/:fileID` | Delete file (admin) |
+| Method | Endpoint | Rate Limit | Description |
+|--------|----------|------------|-------------|
+| POST | `/upload` | 20/hour | Upload incident report |
+| GET | `/userfiles` | 60/min | Get user's own files |
+| POST | `/userfiles` | 60/min | Get user's files (legacy) |
+| GET | `/allFiles` | 60/min | Get all files (admin/client only) |
+| GET | `/file-info/:fileID` | 60/min | Get file metadata |
+| POST | `/download` | 50/hour | Get file download path |
+| POST | `/delete` | 30/min | Delete file (admin only) |
 
 ### Annotations
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/annotations` | Get annotations for file |
-| POST | `/annotations` | Create annotation |
-| PUT | `/annotations/:annotationID` | Update annotation |
-| DELETE | `/annotations/:annotationID` | Delete annotation |
+| Method | Endpoint | Rate Limit | Description |
+|--------|----------|------------|-------------|
+| GET | `/annotations/:fileID` | 60/min | Get annotations for a file |
+| POST | `/annotations` | 30/min | Create new annotation |
+| PUT | `/annotations/:annotationID` | 30/min | Update annotation |
+| DELETE | `/annotations/:annotationID` | 30/min | Delete annotation |
 
 ### Attack Flows
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/generate-attack-flow` | Generate attack flow from annotations |
-| GET | `/attack-flows/:fileID` | Get attack flows for file |
-| POST | `/approve-flow/:flowID` | Approve attack flow |
-| POST | `/reject-flow/:flowID` | Reject attack flow |
-| GET | `/download-flow/:flowID` | Download attack flow JSON |
+| Method | Endpoint | Rate Limit | Description |
+|--------|----------|------------|-------------|
+| POST | `/generate-attack-flow` | 30/min | Generate attack flow from annotations |
+| GET | `/attack-flows/:fileID` | 60/min | Get attack flows for a file |
+| GET | `/all-attack-flows` | 60/min | Get all flows (admin/client only) |
+| GET | `/attack-flow/:flowID` | 60/min | Get single attack flow |
+| POST | `/approve-flow/:flowID` | 30/min | Approve flow (admin/client only) |
+| POST | `/reject-flow/:flowID` | 30/min | Reject flow with feedback |
+| GET | `/download-flow/:flowID` | 50/hour | Download flow as JSON |
+
+### Document Workflow
+| Method | Endpoint | Rate Limit | Description |
+|--------|----------|------------|-------------|
+| GET | `/annotate/:fileID` | 60/min | Serve annotation editor |
+| POST | `/submit-for-validation/:fileID` | 30/min | Submit file for validation |
 
 ### Tags
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/tags` | Get all MITRE ATT&CK tags |
+| Method | Endpoint | Rate Limit | Description |
+|--------|----------|------------|-------------|
+| GET | `/tags` | 30/min | Get all MITRE ATT&CK tags (public) |
 
 ## Security Features
 
 This application implements comprehensive security measures following OWASP best practices:
 
 ### Rate Limiting
-- **General API:** 100 requests per 15 minutes
-- **Authentication:** 5 attempts per 15 minutes (brute-force protection)
-- **File Upload:** 20 uploads per hour
-- **Mutations:** 30 operations per minute
+
+All endpoints are protected with appropriate rate limiters (IP + User based):
+
+| Limiter | Limit | Purpose |
+|---------|-------|---------|
+| `authLimiter` | 5/15min | Login, signup, logout (brute-force protection) |
+| `readLimiter` | 60/min | GET data endpoints (files, annotations, flows) |
+| `mutationLimiter` | 30/min | POST/PUT/DELETE operations |
+| `uploadLimiter` | 20/hour | File uploads |
+| `downloadLimiter` | 50/hour | File and flow downloads |
+| `sessionLimiter` | 120/min | Session status checks |
+| `publicLimiter` | 30/min | Public endpoints (IP-only) |
+| `generalLimiter` | 100/15min | Baseline protection |
+
+Rate limit responses include `Retry-After` header and return HTTP 429 with helpful error messages.
+
+### Authorization (IDOR Protection)
+- Users can only access their own files (annotators)
+- Admins and clients can access all files
+- File ownership verified on download, annotations, and file info endpoints
+- Unauthorized access attempts are logged for security monitoring
 
 ### Input Validation
 - Schema-based validation using Joi
@@ -262,20 +291,32 @@ Generated attack flows follow the MITRE Attack Flow specification (STIX 2.1 form
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NODE_ENV` | development | Environment mode |
+| **Server** | | |
+| `NODE_ENV` | development | Environment mode (`development` or `production`) |
 | `PORT` | 3000 | Server port |
-| `SESSION_SECRET` | - | Session encryption key (required) |
-| `SESSION_COOKIE_SECURE` | false | Require HTTPS for cookies |
-| `SESSION_COOKIE_MAX_AGE` | 86400000 | Session lifetime (ms) |
+| **Session** | | |
+| `SESSION_SECRET` | - | Session encryption key (required, min 32 chars in prod) |
+| `SESSION_COOKIE_SECURE` | false | Require HTTPS for cookies (set `true` in production) |
+| `SESSION_COOKIE_MAX_AGE` | 86400000 | Session lifetime in ms (24 hours) |
+| **Database** | | |
 | `DB_HOST` | localhost | MySQL host |
 | `DB_PORT` | 3306 | MySQL port |
 | `DB_NAME` | attackflow | Database name |
 | `DB_USER` | root | Database user |
 | `DB_PASSWORD` | - | Database password |
-| `BCRYPT_SALT_ROUNDS` | 12 | Password hashing cost |
-| `MAX_FILE_SIZE` | 52428800 | Max upload size (50MB) |
-| `RATE_LIMIT_MAX_REQUESTS` | 100 | General rate limit |
-| `AUTH_RATE_LIMIT_MAX_REQUESTS` | 5 | Auth rate limit |
+| `DB_CONNECTION_LIMIT` | 10 | Max database connections |
+| **Security** | | |
+| `BCRYPT_SALT_ROUNDS` | 12 | Password hashing cost factor |
+| `MAX_FILE_SIZE` | 52428800 | Max upload size in bytes (50MB) |
+| `ALLOWED_FILE_EXTENSIONS` | .pdf,.doc,.docx,.txt | Allowed upload types |
+| **Rate Limiting** | | |
+| `RATE_LIMIT_WINDOW_MS` | 900000 | General limit window (15 min) |
+| `RATE_LIMIT_MAX_REQUESTS` | 100 | General limit max requests |
+| `AUTH_RATE_LIMIT_MAX_REQUESTS` | 5 | Auth limit max requests |
+| `READ_RATE_LIMIT_MAX_REQUESTS` | 60 | Read endpoint limit |
+| `MUTATION_RATE_LIMIT_MAX_REQUESTS` | 30 | Mutation limit |
+| `UPLOAD_RATE_LIMIT_MAX_REQUESTS` | 20 | Upload limit |
+| `DOWNLOAD_RATE_LIMIT_MAX_REQUESTS` | 50 | Download limit |
 
 ## Development
 

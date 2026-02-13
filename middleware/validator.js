@@ -337,11 +337,14 @@ const schemas = {
         password: fields.password
     }).options({ stripUnknown: true }), // Remove unexpected fields
 
+    // SECURITY: Signup schema does NOT accept 'access' field
+    // All self-registered users are forced to 'annotator' role
+    // Admin/client roles must be assigned by admins via admin panel
     signup: Joi.object({
         username: fields.username,
         password: fields.password,
-        email: fields.email,
-        access: fields.role
+        email: fields.email
+        // NOTE: 'access' field intentionally excluded - prevents privilege escalation
     }).options({ stripUnknown: true }),
 
     /**
